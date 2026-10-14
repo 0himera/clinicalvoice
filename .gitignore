@@ -1,0 +1,40 @@
+# Binaries and build artifacts
+go-core/bin/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Python and virtual environments
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Audio outputs & temporary recordings (keep .gitkeep)
+audio_output/*.wav
+audio_output/*.pcm
+!audio_output/.gitkeep
+/tmp/
+
+# Environment files
+.env
+.env.local
+*.local
+
+# IDE and OS metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
