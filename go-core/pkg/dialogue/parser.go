@@ -6,6 +6,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/himera/tochka-voice/go-core/pkg/models"
+	"github.com/himera/tochka-voice/go-core/pkg/slotmgr"
 )
 
 type Intent string
@@ -16,160 +19,283 @@ const (
 	IntentCancel      Intent = "CANCEL"
 	IntentCheckStatus Intent = "CHECK_STATUS"
 	IntentSchedule    Intent = "SCHEDULE_INFO"
-	IntentAffirm      Intent = "AFFIRM" // Да, подтверждаю, верно
-	IntentDeny        Intent = "DENY"   // Нет, не подходит
+	IntentHomeVisit   Intent = "HOME_VISIT"
+	IntentAffirm      Intent = "AFFIRM"
+	IntentDeny        Intent = "DENY"
 	IntentUnknown     Intent = "UNKNOWN"
+	IntentDirectory   Intent = "DIRECTORY_INFO"
 )
 
-type ExtractedSlots struct {
-	Intent     Intent
-	Specialty  string
-	LastName   string
-	FirstName  string
-	MiddleName string
-	BirthDate  string // ДД.ММ.ГГГГ
-	TargetDate string // дата слота если названа
-	TargetTime string // время слота если названо
+var wordsRE = regexp.MustCompile(`[\p{L}]+(?:-[\p{L}]+)*|\d+`)
+var numericDateRE = regexp.MustCompile(`(?:^|[^\d])(\d{1,2})[. /](\d{1,2})[. /](\d{2}|\d{4})(?:$|[^\d])`)
+var wordDateRE = regexp.MustCompile(`(\d{1,2})\s+(январ[\p{L}]*|феврал[\p{L}]*|март[\p{L}]*|апрел[\p{L}]*|ма[яе][\p{L}]*|июн[\p{L}]*|июл[\p{L}]*|август[\p{L}]*|сентябр[\p{L}]*|октябр[\p{L}]*|ноябр[\p{L}]*|декабр[\p{L}]*)\s+(\d{2}|\d{4})(?:$|[^\d])`)
+var clockRE = regexp.MustCompile(`(?:^|[^\d])(\d{1,2})[:.](\d{2})(?:$|[^\d])`)
+
+var confirmationWords = func() map[string]bool {
+	allowed := map[string]bool{}
+	for _, token := range strings.Fields("да ага угу верно правильно подтверждаю подходит согласен согласна давайте хорошо окей приду буду смогу конечно точно определенно безусловно я это все спасибо пожалуйста на приеме вовремя у вас прийти подойти запись выбранную время врача отмену отмените отменяйте запишите записывайте перенесите переносите") {
+		allowed[token] = true
+	}
+	return allowed
+}()
+
+func normalized(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.ReplaceAll(s, "ё", "е"))), " ")
+}
+func word(s, needle string) bool {
+	for _, w := range wordsRE.FindAllString(normalized(s), -1) {
+		if w == needle {
+			return true
+		}
+	}
+	return false
 }
 
-var (
-	dateRegex      = regexp.MustCompile(`(\d{1,2})[\.\s/](\d{1,2})[\.\s/](\d{2,4})`)
-	timeRegex      = regexp.MustCompile(`(\d{1,2})[:\.\s](\d{2})`)
-	birthYearRegex = regexp.MustCompile(`(\d{1,2})\s+(январ\w*|феврал\w*|март\w*|апрел\w*|ма[яе]\w*|июн\w*|июл\w*|август\w*|сентябр\w*|октябр\w*|ноябр\w*|декабр\w*)\s+(\d{2,4})`)
-)
-
-// ParseIntent классифицирует базовый интент по фразе
-func ParseIntent(text string) Intent {
-	norm := strings.ToLower(text)
-	switch {
-	case containsAny(norm, "перенес", "другой день", "другое время", "попозже"):
-		return IntentReschedule
-	case containsAny(norm, "отмен", "не приду", "не смогу", "уже не нужно"):
-		return IntentCancel
-	case containsAny(norm, "когда я записан", "на когда", "во сколько мне", "проверьте запись", "моя запись"):
-		return IntentCheckStatus
-	case containsAny(norm, "график", "режим работы", "как работаете", "до скольки", "со скольк", "со скольки", "в субботу", "адрес", "кров", "процедурн", "анализ", "прививк", "укол"):
-		return IntentSchedule
-	case containsAny(norm, "запис", "талон", "к врачу", "приём", "попасть к"):
-		return IntentBooking
-	case containsAny(norm, "да", "верно", "подтверждаю", "давайте", "подходит", "согласен", "хорошо"):
-		return IntentAffirm
-	case containsAny(norm, "нет", "не надо", "не то", "не подходит", "другое"):
+// Confirmation is a closed vocabulary: negation always wins, substrings never do.
+func Confirmation(text string) Intent {
+	s := normalized(text)
+	if containsAny(s, "не подходит", "не надо", "не нужно", "не верно", "неверно", "не приду", "не смогу", "не буду", "не соглас", "не подтвержда", "не отмен", "не запис", "не переноси", "не мой", "не тот", "не эта", "не это") || word(s, "нет") {
 		return IntentDeny
-	default:
+	}
+	// Agreement inside a question, condition, or alternative is not consent.
+	if informationQuestion(s) || containsAny(s, "повтор", "уточн", "не уверен", "не уверена", "не понял", "не поняла", "может быть") || hasWord(s, "но", "если", "или", "наверное", "возможно", "только", "сначала", "позже") {
 		return IntentUnknown
+	}
+	for _, token := range wordsRE.FindAllString(s, -1) {
+		if !confirmationWords[token] {
+			return IntentUnknown
+		}
+	}
+	for _, w := range []string{"да", "ага", "угу", "верно", "правильно", "подтверждаю", "подходит", "согласен", "согласна", "давайте", "хорошо", "окей", "приду"} {
+		if word(s, w) {
+			return IntentAffirm
+		}
+	}
+	if containsAny(s, "смогу прийти", "смогу подойти", "буду на приеме", "буду вовремя", "буду у вас") {
+		return IntentAffirm
+	}
+	return IntentUnknown
+}
+
+func ParseIntent(text string) Intent {
+	s := normalized(text)
+	tasks := requestedTasks(s)
+	if len(tasks) > 1 {
+		return IntentUnknown
+	}
+	switch {
+	case containsAny(s, "когда я запис", "моя запись", "мои записи", "проверить запись", "проверьте запись", "на когда записан", "на когда записана") || (strings.Contains(s, "запис") && containsAny(s, "провер", "уточн", "узнать")):
+		if len(tasks) == 1 {
+			return tasks[0]
+		}
+		return IntentCheckStatus
+	case len(tasks) == 1:
+		return tasks[0]
+	case containsAny(s, "какие врачи", "какие специалисты", "какие специальности", "список врач", "перечислите врач", "перечень врач", "какие профили"):
+		return IntentDirectory
+	case scheduleQuestion(s) || containsAny(s, "адрес", "анализ", "процедурн", "забор крови", "стоимост", "цена", "прикреп", "документ"):
+		return IntentSchedule
+	case containsAny(s, "талон", "к врачу", "попасть к"):
+		return IntentBooking
+	default:
+		return Confirmation(s)
 	}
 }
 
-// ExtractSpecialty извлекает специальность врача из реплики
+// Count positive operation requests, not quoted/negated operation stems. The
+// caller asks which task comes first rather than silently choosing a mutation.
+func requestedTasks(text string) []Intent {
+	s := normalized(text)
+	if containsAny(s, "врач", "доктор") && containsAny(s, "на дом", "домой") {
+		return []Intent{IntentHomeVisit}
+	}
+	tokens := wordsRE.FindAllString(s, -1)
+	found := map[Intent]bool{}
+	var tasks []Intent
+	for i, token := range tokens {
+		if negatedOperation(tokens, i) {
+			continue
+		}
+		var intent Intent
+		switch {
+		case containsPrefix(token, "перенес", "перенос"):
+			intent = IntentReschedule
+		case containsPrefix(token, "отмен", "вычеркн"):
+			intent = IntentCancel
+		case containsPrefix(token, "записат", "записыва", "запиш"):
+			intent = IntentBooking
+		}
+		if intent != "" && !found[intent] {
+			found[intent] = true
+			tasks = append(tasks, intent)
+		}
+	}
+	if len(tasks) == 0 {
+		if containsAny(s, "другой день", "другое время", "попозже") {
+			return []Intent{IntentReschedule}
+		}
+		if containsAny(s, "не приду", "не смогу") {
+			return []Intent{IntentCancel}
+		}
+	}
+	return tasks
+}
+
+func negatedOperation(tokens []string, index int) bool {
+	for i := index - 1; i >= 0 && index-i <= 4; i-- {
+		if tokens[i] == "не" {
+			return true
+		}
+		if !hasWord(tokens[i], "надо", "нужно", "нужна", "хочу", "буду", "стоит", "следует", "собираюсь", "мне", "сейчас", "пожалуйста") {
+			break
+		}
+	}
+	return false
+}
+
+func containsPrefix(token string, prefixes ...string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(token, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func needsSemanticReview(text string, intent Intent) bool {
+	s := normalized(text)
+	return isTaskIntent(intent) && (containsAny(s, "нужно ли", "можно ли", "возможно ли", "хочу узнать", "не знаю", "не уверен", "если ") || hasWord(s, "зачем", "почему"))
+}
+
 func ExtractSpecialty(text string) string {
-	norm := strings.ToLower(text)
-	specs := []struct {
+	s := normalized(text)
+	groups := []struct {
 		keys []string
 		spec string
 	}{
-		{[]string{"терапевт", "участков"}, "терапевт"},
-		{[]string{"педиатр", "детск"}, "педиатр"},
-		{[]string{"лор", "ухо", "горло", "нос", "оториноларинголог"}, "оториноларинголог"},
-		{[]string{"окулист", "офтальмолог", "глаз"}, "офтальмолог"},
-		{[]string{"хирург"}, "хирург"},
-		{[]string{"гинеколог", "акушер", "женск"}, "акушер-гинеколог"},
-		{[]string{"стоматолог", "зубн"}, "стоматолог"},
-		{[]string{"дерматолог", "дерматовенеролог", "кож"}, "дерматовенеролог"},
-		{[]string{"травматолог", "ортопед"}, "травматолог-ортопед"},
-		{[]string{"невролог", "нерв"}, "невролог"},
-		{[]string{"кардиолог", "сердц"}, "кардиолог"},
-		{[]string{"гастроэнтеролог", "желудок"}, "гастроэнтеролог"},
-		{[]string{"уролог"}, "уролог"},
-		{[]string{"эндокринолог", "щитовидк"}, "эндокринолог"},
+		{[]string{"терапевт", "участков"}, "терапевт"}, {[]string{"педиатр"}, "педиатр"},
+		{[]string{"стоматолог", "зубному"}, "стоматолог-терапевт"},
+		{[]string{"отоларинголог", "оториноларинголог", "лору", "лор"}, "оториноларинголог"},
+		{[]string{"офтальмолог", "окулист"}, "офтальмолог"}, {[]string{"гинеколог", "акушер"}, "акушер-гинеколог"},
+		{[]string{"нейрохирург"}, "нейрохирург"}, {[]string{"хирург"}, "хирург"},
+		{[]string{"дерматолог", "дерматовенеролог"}, "дерматовенеролог"}, {[]string{"травматолог", "ортопед"}, "травматолог-ортопед"},
+		{[]string{"невролог"}, "невролог"}, {[]string{"кардиолог"}, "кардиолог"}, {[]string{"гастроэнтеролог"}, "гастроэнтеролог"},
+		{[]string{"эндокринолог"}, "эндокринолог"}, {[]string{"уролог"}, "уролог"},
 	}
-
-	for _, s := range specs {
-		for _, k := range s.keys {
-			if strings.Contains(norm, k) {
-				return s.spec
+	for _, g := range groups {
+		for _, k := range g.keys {
+			if strings.Contains(s, k) {
+				return g.spec
 			}
 		}
 	}
 	return ""
 }
 
-// ExtractBirthDate извлекает дату рождения в формате ДД.ММ.ГГГГ
+func validBirth(d, m, y int) string {
+	now := time.Now().In(models.ClinicLocation)
+	if y < 100 {
+		y += 2000
+		if y > now.Year() {
+			y -= 100
+		}
+	}
+	t := time.Date(y, time.Month(m), d, 0, 0, 0, 0, models.ClinicLocation)
+	if t.Year() != y || int(t.Month()) != m || t.Day() != d || y < now.Year()-120 || t.After(now) {
+		return ""
+	}
+	return t.Format("02.01.2006")
+}
+
 func ExtractBirthDate(text string) string {
-	// Формат "12.03.1985" или "12 03 1985"
-	if m := dateRegex.FindStringSubmatch(text); len(m) == 4 {
-		d, _ := strconv.Atoi(m[1])
-		mon, _ := strconv.Atoi(m[2])
-		y, _ := strconv.Atoi(m[3])
-		if y < 100 {
-			if y > 25 {
-				y += 1900
-			} else {
-				y += 2000
-			}
-		}
-		if d >= 1 && d <= 31 && mon >= 1 && mon <= 12 && y >= 1910 && y <= 2026 {
-			return fmt.Sprintf("%02d.%02d.%04d", d, mon, y)
-		}
+	if date, complete := labelledBirthDate(text); complete {
+		return date
 	}
-
-	// Словесный формат "12 марта 1985"
-	if m := birthYearRegex.FindStringSubmatch(strings.ToLower(text)); len(m) == 4 {
+	if m := numericDateRE.FindStringSubmatch(text); len(m) == 4 {
 		d, _ := strconv.Atoi(m[1])
-		mon := monthToNum(m[2])
+		mo, _ := strconv.Atoi(m[2])
 		y, _ := strconv.Atoi(m[3])
-		if y < 100 {
-			if y > 25 {
-				y += 1900
-			} else {
-				y += 2000
-			}
-		}
-		if mon > 0 && d >= 1 && d <= 31 {
-			return fmt.Sprintf("%02d.%02d.%04d", d, mon, y)
-		}
+		return validBirth(d, mo, y)
 	}
-
-	return ""
+	if m := wordDateRE.FindStringSubmatch(strings.ToLower(text)); len(m) == 4 {
+		d, _ := strconv.Atoi(m[1])
+		y, _ := strconv.Atoi(m[3])
+		return validBirth(d, monthToNum(m[2]), y)
+	}
+	return spokenBirthDate(text)
 }
 
-// ExtractFIO пытается извлечь фамилию, имя, отчество из реплики
 func ExtractFIO(text string) (last, first, middle string) {
-	// Очищаем от мусорных слов
-	cleaned := strings.ToLower(text)
-	stopWords := []string{
-		"меня", "зовут", "я", "фамилия", "имя", "отчество", "пациент", "запишите", "пожалуйста",
-		"к врачу", "к доктору", "к терапевту", "терапевту", "терапевт", "педиатру", "педиатр",
-		"хирургу", "хирург", "лору", "лор", "офтальмологу", "окулисту", "неврологу", "невролог",
-		"января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря",
-		"года", "году", "год", "рождения", "прием", "приём", "талон", "запись",
+	// Ordinary questions must never become a patient's surname and first name.
+	if (informationQuestion(normalized(text)) && !isTaskIntent(ParseIntent(text))) || repeatRequest(normalized(text)) || purposeQuestion(normalized(text)) {
+		return "", "", ""
 	}
-	for _, sw := range stopWords {
-		cleaned = strings.ReplaceAll(cleaned, sw, " ")
+	s := strings.Join(strings.Fields(strings.ToLower(text)), " ")
+	// Name preambles are removed as words, never as pieces of a person's name.
+	for _, marker := range []string{"меня зовут ", "фамилия ", "пациент "} {
+		if i := strings.Index(s, marker); i >= 0 {
+			s = s[i+len(marker):]
+			break
+		}
 	}
-
-	words := strings.Fields(cleaned)
-	var names []string
-	for _, w := range words {
-		// Фильтруем цифры и даты
+	if i := strings.Index(" "+s, " я "); i >= 0 {
+		s = (" " + s)[i+3:]
+	}
+	stop := map[string]bool{}
+	for _, w := range strings.Fields("здравствуйте добрый день дня число числа месяц месяца дата дату вечер утро меня зовут я фамилия имя отчество пациент запишите записаться записать хочу хотел хотела бы пожалуйста можно можете мне нужно еще также мою моего моей моему свою своего дочь дочку сына ребенка ребёнка маму папу жену мужа к врачу доктору терапевту терапевт педиатру хирургу лору офтальмологу окулисту неврологу кардиологу года году год рождения родился родилась запись прием на в и это спасибо") {
+		stop[w] = true
+	}
+	for _, w := range wordsRE.FindAllString(s, -1) {
+		if _, ok := numberToken(normalized(w)); ok {
+			break
+		}
 		if _, err := strconv.Atoi(w); err == nil {
+			break
+		}
+		if stop[w] || ExtractSpecialty(w) != "" {
 			continue
 		}
-		if len(w) > 2 && !strings.ContainsAny(w, "0123456789.,/-") {
-			names = append(names, capitalize(w))
+		if monthToNum(w) > 0 && containsAny(w, "январ", "феврал", "март", "апрел", "август", "сентябр", "октябр", "ноябр", "декабр") {
+			break
+		}
+		if last == "" {
+			last = capitalize(w)
+		} else if first == "" {
+			first = capitalize(w)
+		} else {
+			middle = capitalize(w)
+			break
 		}
 	}
-
-	if len(names) >= 1 {
-		last = names[0]
-	}
-	if len(names) >= 2 {
-		first = names[1]
-	}
-	if len(names) >= 3 {
-		middle = names[2]
-	}
 	return
+}
+
+func SlotPreference(text string) slotmgr.Query {
+	s := normalized(text)
+	q := slotmgr.Query{Limit: 2}
+	if containsAny(s, "после обеда", "послеобед", "вечер") {
+		q.MinHour = 13
+	}
+	if containsAny(s, "утро", "утром") {
+		q.MaxHour = 12
+	}
+	for day, name := range map[time.Weekday]string{time.Monday: "понедельник", time.Tuesday: "вторник", time.Wednesday: "сред", time.Thursday: "четверг", time.Friday: "пятниц", time.Saturday: "суббот"} {
+		if strings.Contains(s, name) {
+			d := day
+			if strings.Contains(s, "не в "+name) {
+				q.ExcludedWeekday = &d
+			} else {
+				q.Weekday = &d
+			}
+			break
+		}
+	}
+	if strings.Contains(s, "завтра") {
+		n := time.Now().In(models.ClinicLocation).AddDate(0, 0, 1)
+		q.After = time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, models.ClinicLocation)
+		q.Before = q.After.AddDate(0, 0, 1)
+	}
+	return q
 }
 
 func capitalize(s string) string {
@@ -242,11 +368,11 @@ func FormatDateRussian(t time.Time) string {
 		time.May:       "мая",
 		time.June:      "июня",
 		time.July:      "июля",
-		time.August:     "августа",
-		time.September:  "сентября",
-		time.October:    "октября",
-		time.November:   "ноября",
-		time.December:   "декабря",
+		time.August:    "августа",
+		time.September: "сентября",
+		time.October:   "октября",
+		time.November:  "ноября",
+		time.December:  "декабря",
 	}
 
 	return fmt.Sprintf("%s, %d %s в %s", days[t.Weekday()], t.Day(), months[t.Month()], t.Format("15:04"))

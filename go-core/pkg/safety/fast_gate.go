@@ -15,6 +15,31 @@ type SafetyResult struct {
 	RouteTarget string // M0 (103/112), M2 (регистратор), M3 (старший админ)
 }
 
+func (r SafetyResult) Extension() string {
+	switch r.Level {
+	case models.FlagCategoryA, models.FlagCategoryB:
+		return "104"
+	case models.FlagComplaint:
+		return "105"
+	case models.FlagOperatorReq:
+		return "101"
+	}
+	return ""
+}
+func (r SafetyResult) Priority() int {
+	switch r.Level {
+	case models.FlagCategoryA:
+		return 4
+	case models.FlagCategoryB:
+		return 3
+	case models.FlagOperatorReq:
+		return 2
+	case models.FlagComplaint:
+		return 1
+	}
+	return 0
+}
+
 type FastGate struct {
 	categoryARegex   *regexp.Regexp
 	categoryBRegex   *regexp.Regexp
@@ -32,6 +57,30 @@ func NewFastGate() *FastGate {
 		`сердечн.*приступ`,
 		`инфаркт`,
 		`(не.*мож[ее]т|трудн|тяжел|нечем).*дышать`,
+		`не.*могу.*дышать`,
+		`не.*дышит`,
+		`задыха`,
+		`не.*дышу`,
+		`не.*хватает.*воздух`,
+		`бол.*сердц|сердц.*бол`,
+		`тряс[её]т.*не.*останавлива`,
+		`кровь.*изо.*рта`,
+		`сильн.*ударил.*голов`,
+		`ожог.*больш`,
+		`отравил`,
+		`(выпил|проглотил).*?(хими|таблет)`,
+		`укусила.*змея`,
+		`не.*может.*глотать`,
+		`младен.*(вял|не.*просыпа)`,
+		`грудн.*реб[её]н.*температур`,
+		`реб[её]нок.*(посинел|проглотил)`,
+		`беремен.*кровотечен`,
+		`кровотечен.*беремен`,
+		`отошли.*воды`,
+		`сильн.*бол.*беремен`,
+		`начались.*схватк`,
+		`не.*хочу.*жить`,
+		`угрожа.*убить`,
 		`задыха[ею]т`,
 		`син[ее]ет`,
 		`хрип[ия]т`,
@@ -71,6 +120,12 @@ func NewFastGate() *FastGate {
 		`температур.*40`,
 		`резко.*поднял.*давлен`,
 		`не.*могу.*встать`,
+		`остр.*бол`,
+		`невыносим.*болит`,
+		`стало.*намного.*хуже`,
+		`температур.*третий.*день.*хуже`,
+		`подвернул.*ног.*распух`,
+		`порезал.*глубок`,
 	}
 
 	// Требование живого оператора (Регламент 7.3, R-02)
@@ -119,7 +174,7 @@ func (fg *FastGate) Check(text string) SafetyResult {
 			MatchedText: match,
 			ActionCode:  "R-01",
 			RouteTarget: "M0", // 103/112
-			BotResponse: "Немедленно звоните сто три или сто двенадцать! Я сейчас переведу вас на экстренную линию.",
+			BotResponse: "Немедленно звоните сто три или сто двенадцать! Соединяю с дежурным сотрудником поликлиники.",
 		}
 	}
 

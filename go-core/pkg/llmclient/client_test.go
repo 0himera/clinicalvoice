@@ -3,16 +3,69 @@ package llmclient
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
+func TestGeminiRequiresExplicitRemoteOptInAndOfficialHTTPS(t *testing.T) {
+	for _, test := range []struct {
+		url            string
+		allow, enabled bool
+	}{
+		{"https://generativelanguage.googleapis.com/v1beta/openai", false, false},
+		{"https://generativelanguage.googleapis.com/v1beta/openai", true, true},
+		{"http://generativelanguage.googleapis.com/v1beta/openai", true, false},
+		{"https://generativelanguage.googleapis.com.evil.invalid/v1beta/openai", true, false},
+		{"https://generativelanguage.googleapis.com/v1beta/openai?key=secret", true, false},
+	} {
+		client := NewUniversalLLMClient(Config{Provider: "gemini", BaseURL: test.url, APIKey: "test", Model: "gemini-3.5-flash-lite", AllowRemote: test.allow})
+		if client.IsEnabled() != test.enabled {
+			t.Errorf("incorrect Gemini endpoint policy: %s", test.url)
+		}
+	}
+}
+
+func TestGeminiUsesSchemaAndRejectsGeneratedSpeech(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		if request.ResponseFormat == nil || request.ResponseFormat.Type != "json_schema" || request.ResponseFormat.JSONSchema == nil || !request.ResponseFormat.JSONSchema.Strict || request.ReasoningEffort != "minimal" {
+			t.Errorf("unconstrained Gemini request: %+v", request)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": `{"intent":"FAQ_INFO","bot_speech":"invented medical advice"}`}}}})
+	}))
+	defer server.Close()
+	client := NewUniversalLLMClient(Config{Provider: "gemini", BaseURL: server.URL, APIKey: "test", Model: "fixture"})
+	if _, err := client.ExtractSlots(context.Background(), "Как попасть внутрь?", "STATE_MAIN_MENU"); err == nil {
+		t.Fatal("free generated speech bypassed NLU schema")
+	}
+}
+
+func TestNLURedirectDoesNotSendKeyToAnotherHost(t *testing.T) {
+	visited := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { visited = true; _, _ = io.WriteString(w, "unexpected") }))
+	defer target.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer redirect.Close()
+	client := NewUniversalLLMClient(Config{Provider: "custom", BaseURL: redirect.URL, APIKey: "private-test-key", Model: "fixture"})
+	_, err := client.ExtractSlots(context.Background(), "тест", "STATE_MAIN_MENU")
+	if err == nil || visited || strings.Contains(err.Error(), "private-test-key") {
+		t.Fatal("redirect leaked NLU credentials")
+	}
+}
+
 func TestUniversalLLMClient_Disabled(t *testing.T) {
 	cfg := Config{
-		Provider: "gemini",
-		BaseURL:  "https://generativelanguage.googleapis.com/v1beta/openai",
+		Provider: "custom",
+		BaseURL:  "https://example.invalid/v1",
 		APIKey:   "", // empty key
 	}
 	client := NewUniversalLLMClient(cfg)

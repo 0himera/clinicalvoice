@@ -1,13 +1,15 @@
-import os
-import sys
-import uvicorn
+import logging
+from pathlib import Path
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
+import uvicorn
+from dotenv import load_dotenv
+
+from src.settings import Settings
 
 if __name__ == "__main__":
-    port = int(os.environ.get("AI_WORKER_PORT", 8000))
-    host = os.environ.get("AI_WORKER_HOST", "0.0.0.0")
-    print(f"[AI-WORKER] Запуск голосового сервиса на {host}:{port}...")
-    uvicorn.run("src.voice_bridge:app", host=host, port=port, reload=False)
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+    settings = Settings.from_env()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    if settings.debug_dialogue:
+        logging.warning("Local dialogue transcript debugging enabled: %s", settings.debug_log_dir)
+    uvicorn.run("src.voice_bridge:app", host=settings.host, port=settings.port, access_log=False)

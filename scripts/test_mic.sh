@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-set -e
-
-# ==============================================================================
-# Запуск интерактивного голосового клиента (Voice-to-Voice)
-# ==============================================================================
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec python3 "$SCRIPT_DIR/voice_dialogue.py" "$@"
+set -euo pipefail
+TASK_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+exec "$TASK_ROOT/ai-worker/.venv/bin/python" "$TASK_ROOT/scripts/voice_dialogue.py" "$@"

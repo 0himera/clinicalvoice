@@ -1,0 +1,114 @@
+package config
+
+import (
+	"bufio"
+	"errors"
+	"fmt"
+	"net"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+
+type Config struct {
+	Address       string
+	APIToken      string
+	Database      string
+	Schedule      string
+	MISToken      string
+	MISURL        string
+	AMIAddress    string
+	AMIUser       string
+	AMISecret     string
+	DemoCalls     bool
+	DebugDialogue bool
+	DebugLogDir   string
+}
+
+// LoadDotEnv accepts literal KEY=VALUE lines. Existing process variables win;
+// shell substitution and executable configuration are deliberately unsupported.
+func LoadDotEnv(filename string) error {
+	f, err := os.Open(filename)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		k, v, ok := strings.Cut(line, "=")
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if !ok || k == "" {
+			return fmt.Errorf("invalid environment line")
+		}
+		for _, r := range k {
+			if !(r == '_' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+				return fmt.Errorf("invalid environment key")
+			}
+		}
+		if len(v) >= 2 && ((v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'')) {
+			v = v[1 : len(v)-1]
+		}
+		if _, exists := os.LookupEnv(k); !exists {
+			if err = os.Setenv(k, v); err != nil {
+				return err
+			}
+		}
+	}
+	return s.Err()
+}
+func env(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func Load() (Config, error) {
+	c := Config{Address: net.JoinHostPort(env("CORE_HOST", "127.0.0.1"), env("PORT", "8080")), APIToken: os.Getenv("CORE_API_TOKEN"), Database: env("DATABASE_PATH", "var/tochka.db"), Schedule: os.Getenv("SCHEDULE_PATH"), MISToken: os.Getenv("MIS_API_TOKEN"), MISURL: env("MIS_API_URL", "https://crm-med-mock.dbi-testing.ru/api/v1"), AMIAddress: env("ASTERISK_AMI_ADDRESS", "127.0.0.1:5038"), AMIUser: env("ASTERISK_AMI_USER", "tochka"), AMISecret: os.Getenv("ASTERISK_AMI_SECRET"), DemoCalls: os.Getenv("ALLOW_DEMO_CALLS_OUTSIDE_WINDOW") == "true"}
+	c.DebugDialogue = os.Getenv("DEBUG_DIALOGUE") == "true"
+	c.DebugLogDir = env("DEBUG_LOG_DIR", "var/debug")
+	if c.DebugDialogue && c.MISToken != "" {
+		return c, errors.New("dialogue transcript debugging is available only with the local mock")
+	}
+	host, port, err := net.SplitHostPort(c.Address)
+	if err != nil {
+		return c, err
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p < 1 || p > 65535 {
+		return c, fmt.Errorf("PORT must be between 1 and 65535")
+	}
+	ip := net.ParseIP(host)
+	if host != "localhost" && (ip == nil || !ip.IsLoopback()) && len(c.APIToken) < 24 {
+		return c, fmt.Errorf("CORE_API_TOKEN of at least 24 characters is required for a non-loopback bind")
+	}
+	u, err := url.Parse(c.MISURL)
+	if err != nil || u.Host == "" || u.Scheme != "https" {
+		return c, fmt.Errorf("MIS_API_URL must be HTTPS")
+	}
+	if c.DemoCalls && c.MISToken != "" {
+		return c, fmt.Errorf("demo calling-window override is forbidden with MIS_API_TOKEN")
+	}
+	if c.Schedule == "" {
+		paths, e := filepath.Glob("data/*.xlsx")
+		if e != nil {
+			return c, e
+		}
+		if len(paths) != 1 {
+			return c, fmt.Errorf("set SCHEDULE_PATH to the organizer's workbook")
+		}
+		c.Schedule = paths[0]
+	}
+	return c, nil
+}

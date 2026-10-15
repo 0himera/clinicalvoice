@@ -38,3 +38,11 @@ audio_output/*.pcm
 *~
 .DS_Store
 Thumbs.db
+
+# Durable runtime data and generated credentials
+var/
+*.db
+*.db-wal
+*.db-shm
+.ruff_cache/
+coverage.out

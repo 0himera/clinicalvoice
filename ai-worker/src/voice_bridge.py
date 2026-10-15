@@ -1,104 +1,109 @@
-import io
-import os
-import sys
+"""HTTP speech API plus the locally bound Asterisk transports."""
+
+import asyncio
+import logging
+import secrets
 import time
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, Form, Response
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from typing import Annotated, Literal
 
-# Гарантируем, что корневая директория ai-worker доступна в sys.path
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-asr_service = None
-tts_service = None
-vad_service = None
+from src.limits import BodyLimit
+from src.services import Services, load_services
+from src.settings import Settings
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global asr_service, tts_service, vad_service
-    import torch
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"[AI-WORKER] Запуск на устройстве: {device}")
-    
-    try:
-        from src.tts_service import SileroTTSService
-        tts_service = SileroTTSService(device=device)
-    except Exception as e:
-        print(f"[AI-WORKER] Ошибка загрузки TTS: {e}")
+logger = logging.getLogger(__name__)
+MAX_AUDIO_BYTES = 4 << 20
 
-    try:
-        from src.asr_service import FasterWhisperASR
-        # Загружаем small модель для баланса качества и скорости (<200 мс на реплику)
-        asr_service = FasterWhisperASR(model_size="small", device=device)
-    except Exception as e:
-        print(f"[AI-WORKER] Ошибка загрузки ASR: {e}")
 
-    try:
-        from src.vad_service import SileroVADService
-        vad_service = SileroVADService(device="cpu")
-    except Exception as e:
-        print(f"[AI-WORKER] Ошибка загрузки VAD: {e}")
+def create_app(settings: Settings | None = None, services: Services | None = None) -> FastAPI:
+    settings = settings or Settings.from_env()
 
-    yield
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.services = services or await asyncio.to_thread(load_services, settings.device)
+        bridge = None
+        if settings.telephony:
+            from src.telephony import Bridge
 
-app = FastAPI(title="Voice Bridge AI Worker", version="1.0.0", lifespan=lifespan)
+            bridge = Bridge(settings, app.state.services)
+            await bridge.start()
+        try:
+            yield
+        finally:
+            if bridge is not None:
+                await bridge.close()
+            await app.state.services.close()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    app = FastAPI(title="Tochka Voice speech service", version="0.2.0", lifespan=lifespan)
+    app.add_middleware(BodyLimit)
+
+    @app.middleware("http")
+    async def authenticate(request: Request, call_next):
+        if settings.api_token and request.url.path != "/health":
+            expected = "Bearer " + settings.api_token
+            if not secrets.compare_digest(request.headers.get("authorization", ""), expected):
+                return Response(status_code=401, headers={"WWW-Authenticate": "Bearer"})
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    @app.get("/health")
+    async def health():
+        ready = getattr(app.state, "services", None)
+        if ready is None:
+            raise HTTPException(503, "models are not ready")
+        return {"status": "ok", "device": ready.device, "asr_ready": True, "tts_ready": True}
+
+    @app.post("/asr")
+    async def transcribe_audio(file: Annotated[UploadFile, File()]):
+        audio = await file.read(MAX_AUDIO_BYTES + 1)
+        await file.close()
+        if len(audio) > MAX_AUDIO_BYTES:
+            raise HTTPException(413, "audio exceeds four MiB")
+        if not audio.startswith(b"RIFF"):
+            raise HTTPException(422, "a WAV file is required")
+        started = time.perf_counter()
+        try:
+            async with asyncio.timeout(40):
+                text = await app.state.services.transcribe(audio)
+        except (ValueError, RuntimeError) as exc:
+            logger.warning("ASR rejected audio (%s)", type(exc).__name__)
+            raise HTTPException(422, "audio could not be recognized") from None
+        except TimeoutError:
+            raise HTTPException(503, "recognition capacity is busy") from None
+        return {"text": text, "latency_ms": round((time.perf_counter() - started) * 1000)}
+
+    @app.post("/tts")
+    async def synthesize_speech(req: SynthesisRequest):
+        try:
+            async with asyncio.timeout(40):
+                audio = await app.state.services.synthesize(req.text, req.sample_rate, req.speaker)
+        except (ValueError, RuntimeError) as exc:
+            logger.warning("TTS failed (%s)", type(exc).__name__)
+            raise HTTPException(422, "text could not be synthesized") from None
+        except TimeoutError:
+            raise HTTPException(503, "synthesis capacity is busy") from None
+        return Response(audio, media_type="audio/wav")
+
+    return app
+
 
 class SynthesisRequest(BaseModel):
-    text: str
-    speaker: str = "kseniya"
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=2000)
+    speaker: Literal["aidar", "baya", "kseniya", "xenia", "eugene", "random"] | None = None
+    sample_rate: Literal[8000, 16000, 24000, 48000] = 24000
 
-@app.get("/health")
-def health():
-    import torch
-    return {
-        "status": "ok",
-        "cuda_available": torch.cuda.is_available(),
-        "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A",
-        "asr_ready": asr_service is not None,
-        "tts_ready": tts_service is not None,
-        "vad_ready": vad_service is not None
-    }
+    @field_validator("text")
+    @classmethod
+    def nonempty(cls, value):
+        if not value.strip():
+            raise ValueError("text must not be blank")
+        return value.strip()
 
-@app.post("/asr")
-async def transcribe_audio(file: UploadFile = File(...)):
-    """Принимает WAV / PCM аудиофайл от микрофона или Asterisk и возвращает распознанный текст"""
-    if asr_service is None:
-        return {"error": "ASR не инициализирован", "text": ""}
-    
-    audio_bytes = await file.read()
-    start_t = time.time()
-    text = asr_service.transcribe_wav(audio_bytes)
-    duration_ms = int((time.time() - start_t) * 1000)
-    
-    return {
-        "text": text,
-        "latency_ms": duration_ms
-    }
 
-@app.post("/tts")
-def synthesize_speech(req: SynthesisRequest):
-    """Синтезирует речь через Silero TTS и возвращает аудиофайл WAV"""
-    if tts_service is None:
-        return Response(content=b"", media_type="audio/wav")
-    
-    start_t = time.time()
-    wav_bytes = tts_service.synthesize(req.text)
-    duration_ms = int((time.time() - start_t) * 1000)
-    print(f"[TTS] Синтезировано за {duration_ms} мс: '{req.text[:30]}...'")
-    
-    return Response(content=wav_bytes, media_type="audio/wav")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
+app = create_app()

@@ -1,281 +1,247 @@
 package slotmgr
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/himera/tochka-voice/go-core/pkg/models"
+	"github.com/himera/tochka-voice/go-core/pkg/schedule"
+	"github.com/himera/tochka-voice/go-core/pkg/storage"
 )
 
+var ErrUnavailable = errors.New("slot is unavailable or lease expired")
+
 type SlotManager struct {
-	mu           sync.RWMutex
-	doctors      map[int]models.Doctor
-	bookedSlots  map[string]bool      // key: "docID:YYYY-MM-DD-HH:MM"
-	heldSlots    map[string]slotHold  // key: "docID:YYYY-MM-DD-HH:MM"
+	store    *storage.Store
+	doctors  []models.Doctor
+	entries  []schedule.Entry
+	bookable map[string]bool
 }
 
-type slotHold struct {
-	sessionID string
-	expiresAt time.Time
-}
-
-func NewSlotManager() *SlotManager {
-	sm := &SlotManager{
-		doctors:     make(map[int]models.Doctor),
-		bookedSlots: make(map[string]bool),
-		heldSlots:   make(map[string]slotHold),
+func New(store *storage.Store, snapshot schedule.Snapshot) *SlotManager {
+	bookable := map[string]bool{}
+	active := map[int]bool{}
+	for _, d := range snapshot.Doctors {
+		active[d.ID] = d.IsActive
 	}
-	sm.initDefaultDoctors()
-	return sm
+	for _, e := range snapshot.Entries {
+		if e.Free && active[e.Slot.DoctorID] {
+			bookable[slotKey(e.Slot.DoctorID, e.Slot.StartTime)] = true
+		}
+	}
+	return &SlotManager{store: store, doctors: snapshot.Doctors, entries: snapshot.Entries, bookable: bookable}
 }
 
-// initDefaultDoctors загружает 25 врачей поликлиники № 7 по регламенту
-func (sm *SlotManager) initDefaultDoctors() {
-	defaultDocs := []models.Doctor{
-		// Терапевтическое отделение (слот 20 мин)
-		{ID: 1, FullName: "Васильева Татьяна Геннадьевна", Specialty: "терапевт", IsActive: true, Room: "210"},
-		{ID: 2, FullName: "Кузнецов Андрей Павлович", Specialty: "терапевт", IsActive: true, Room: "212"},
-		{ID: 3, FullName: "Орлова Марина Сергеевна", Specialty: "терапевт", IsActive: true, Room: "214"},
-		{ID: 4, FullName: "Смирнова Елена Викторовна", Specialty: "терапевт", IsActive: true, Room: "216"},
-		// Педиатрическое отделение (слот 20 мин)
-		{ID: 5, FullName: "Белова Ольга Николаевна", Specialty: "педиатр", IsActive: true, Room: "101"},
-		{ID: 6, FullName: "Громов Илья Александрович", Specialty: "педиатр", IsActive: true, Room: "102"},
-		{ID: 7, FullName: "Попова Дарья Андреевна", Specialty: "педиатр", IsActive: true, Room: "103"},
-		// ЛОР (слот 20 мин)
-		{ID: 8, FullName: "Волков Артём Сергеевич", Specialty: "оториноларинголог", IsActive: true, Room: "301"},
-		{ID: 9, FullName: "Медведева Алина Игоревна", Specialty: "оториноларинголог", IsActive: true, Room: "302"},
-		{ID: 10, FullName: "Никитина Ирина Владимировна", Specialty: "оториноларинголог", IsActive: true, Room: "303"},
-		// Офтальмологи (слот 20 мин)
-		{ID: 11, FullName: "Егоров Максим Андреевич", Specialty: "офтальмолог", IsActive: true, Room: "305"},
-		{ID: 12, FullName: "Морозова Светлана Петровна", Specialty: "офтальмолог", IsActive: true, Room: "306"},
-		// Дерматовенеролог (слот 20 мин)
-		{ID: 13, FullName: "Тихонова Екатерина Олеговна", Specialty: "дерматовенеролог", IsActive: true, Room: "401"},
-		// Акушеры-гинекологи (слот 30 мин)
-		{ID: 14, FullName: "Ковалёва Юлия Дмитриевна", Specialty: "акушер-гинеколог", IsActive: true, Room: "201"},
-		{ID: 15, FullName: "Семёнова Виктория Алексеевна", Specialty: "акушер-гинеколог", IsActive: true, Room: "202"},
-		// Хирург (слот 30 мин)
-		{ID: 16, FullName: "Макаров Павел Сергеевич", Specialty: "хирург", IsActive: true, Room: "405"},
-		// Травматологи (слот 30 мин)
-		{ID: 17, FullName: "Зайцев Константин Ильич", Specialty: "травматолог-ортопед", IsActive: true, Room: "407"},
-		{ID: 18, FullName: "Степанов Григорий Львович", Specialty: "травматолог-ортопед", IsActive: true, Room: "408"},
-		// Неврологи (слот 30 мин, по направлению)
-		{ID: 19, FullName: "Захаров Дмитрий Олегович", Specialty: "невролог", IsActive: true, Room: "501"},
-		{ID: 20, FullName: "Фёдорова Наталья Юрьевна", Specialty: "невролог", IsActive: true, Room: "502"},
-		// Кардиологи (слот 30 мин, по направлению)
-		{ID: 21, FullName: "Киселёв Алексей Романович", Specialty: "кардиолог", IsActive: true, Room: "505"},
-		{ID: 22, FullName: "Лебедев Сергей Игоревич", Specialty: "кардиолог", IsActive: true, Room: "506"},
-		// Гастроэнтеролог (слот 30 мин, по направлению)
-		{ID: 23, FullName: "Павлов Роман Евгеньевич", Specialty: "гастроэнтеролог", IsActive: true, Room: "508"},
-		// Уролог (слот 30 мин, по направлению)
-		{ID: 24, FullName: "Андреев Николай Васильевич", Specialty: "уролог", IsActive: true, Room: "510"},
-		// Эндокринолог (слот 30 мин, по направлению)
-		{ID: 25, FullName: "Соколова Анна Михайловна", Specialty: "эндокринолог", IsActive: true, Room: "512"},
-	}
-
-	for _, d := range defaultDocs {
-		sm.doctors[d.ID] = d
-	}
+type Query struct {
+	BirthDate       string
+	Specialty       string
+	DoctorID        int
+	After           time.Time
+	Before          time.Time
+	MinHour         int
+	MaxHour         int
+	Weekday         *time.Weekday
+	ExcludedWeekday *time.Weekday
+	Limit           int
 }
 
-// IsDirectBookingAllowed проверяет, доступна ли прямая самозапись без направления (Регламент 2.3)
-func (sm *SlotManager) IsDirectBookingAllowed(specialty string) bool {
-	s := strings.ToLower(strings.TrimSpace(specialty))
-	switch {
-	case strings.Contains(s, "терапевт"):
-		return true
-	case strings.Contains(s, "педиатр"):
-		return true
-	case strings.Contains(s, "хирург") && !strings.Contains(s, "сосудист"):
-		return true
-	case strings.Contains(s, "офтальмолог") || strings.Contains(s, "окулист"):
-		return true
-	case strings.Contains(s, "оториноларинголог") || strings.Contains(s, "лор"):
-		return true
-	case strings.Contains(s, "гинеколог") || strings.Contains(s, "акушер"):
-		return true
-	case strings.Contains(s, "стоматолог"):
-		return true
-	case strings.Contains(s, "дерматолог") || strings.Contains(s, "дерматовенеролог"):
-		return true
-	default:
-		// Кардиолог, невролог, эндокринолог, гастроэнтеролог, уролог - ТОЛЬКО по направлению
-		return false
-	}
-}
-
-// GetSlotDuration возвращает длительность приёма врача в минутах
-func (sm *SlotManager) GetSlotDuration(specialty string) int {
-	s := strings.ToLower(specialty)
-	if strings.Contains(s, "терапевт") || strings.Contains(s, "педиатр") ||
-		strings.Contains(s, "лор") || strings.Contains(s, "оториноларинголог") ||
-		strings.Contains(s, "офтальмолог") || strings.Contains(s, "дермато") {
-		return 20
-	}
-	return 30
-}
-
-// FindAvailableSlots ищет ближайшие свободные слоты для специальности или врача
-func (sm *SlotManager) FindAvailableSlots(specialty string, doctorID int, limit int) []models.Slot {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	sm.cleanupExpiredHolds()
-
-	var result []models.Slot
+func (sm *SlotManager) Available(ctx context.Context, q Query) ([]models.Slot, error) {
 	now := time.Now()
-	// Часовой пояс GMT+4 (по ТЗ стенда)
-	loc := time.FixedZone("GMT+4", 4*3600)
-	currentDay := now.In(loc)
-
-	// Перебираем дни на горизонт 14 дней
-	for dayOffset := 0; dayOffset < 14; dayOffset++ {
-		date := currentDay.AddDate(0, 0, dayOffset)
-		// Воскресенье поликлиника не работает
-		if date.Weekday() == time.Sunday {
+	if q.After.Before(now.Add(30 * time.Minute)) {
+		q.After = now.Add(30 * time.Minute)
+	}
+	horizon := now.In(models.ClinicLocation).AddDate(0, 0, 14)
+	horizon = time.Date(horizon.Year(), horizon.Month(), horizon.Day(), 0, 0, 0, 0, models.ClinicLocation)
+	if q.Before.IsZero() || q.Before.After(horizon) {
+		q.Before = horizon
+	}
+	if q.Limit <= 0 || q.Limit > 3 {
+		q.Limit = 2
+	}
+	rows, err := sm.store.DB.QueryContext(ctx, "SELECT doctor_id,starts_at FROM slot_claims WHERE status!='held' OR expires_at>?", now.Unix())
+	if err != nil {
+		return nil, err
+	}
+	claims := map[string]bool{}
+	for rows.Next() {
+		var id int
+		var at string
+		if err = rows.Scan(&id, &at); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		claims[fmt.Sprintf("%d:%s", id, at)] = true
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	active := map[int]bool{}
+	for _, d := range sm.doctors {
+		active[d.ID] = d.IsActive
+		if q.BirthDate != "" {
+			age, err := models.AgeOn(q.BirthDate, now)
+			if err != nil {
+				return nil, err
+			}
+			active[d.ID] = d.IsActive && d.AcceptsAge(age)
+		}
+	}
+	result := []models.Slot{}
+	for _, e := range sm.entries {
+		s := e.Slot
+		if !e.Free || !active[s.DoctorID] || s.StartTime.Before(q.After) || !s.StartTime.Before(q.Before) {
 			continue
 		}
-
-		startHour := 8
-		endHour := 20
-		if date.Weekday() == time.Saturday {
-			startHour = 9
-			endHour = 15
+		if q.DoctorID > 0 && s.DoctorID != q.DoctorID {
+			continue
 		}
-
-		for _, doc := range sm.doctors {
-			if !doc.IsActive {
-				continue
-			}
-			if doctorID > 0 && doc.ID != doctorID {
-				continue
-			}
-			if doctorID == 0 && specialty != "" && !strings.Contains(strings.ToLower(doc.Specialty), strings.ToLower(specialty)) {
-				continue
-			}
-
-			stepMin := sm.GetSlotDuration(doc.Specialty)
-
-			for h := startHour; h < endHour; h++ {
-				for m := 0; m < 60; m += stepMin {
-					slotTime := time.Date(date.Year(), date.Month(), date.Day(), h, m, 0, 0, loc)
-
-					// Не предлагаем слоты в прошлом (+ запас 30 мин по регламенту)
-					if slotTime.Before(now.Add(30 * time.Minute)) {
-						continue
-					}
-
-					key := sm.formatSlotKey(doc.ID, slotTime)
-					if sm.bookedSlots[key] {
-						continue
-					}
-					if hold, ok := sm.heldSlots[key]; ok && hold.expiresAt.After(now) {
-						continue
-					}
-
-					result = append(result, models.Slot{
-						DoctorID:  doc.ID,
-						Doctor:    doc.FullName,
-						Specialty: doc.Specialty,
-						Room:      doc.Room,
-						StartTime: slotTime,
-						Duration:  stepMin,
-					})
-
-					if len(result) >= limit {
-						return result
-					}
-				}
-			}
+		if q.Specialty != "" && models.SpecialtyKey(s.Specialty) != models.SpecialtyKey(q.Specialty) {
+			continue
+		}
+		if s.StartTime.Hour() < q.MinHour || (q.MaxHour > 0 && s.StartTime.Hour() >= q.MaxHour) {
+			continue
+		}
+		if q.Weekday != nil && s.StartTime.Weekday() != *q.Weekday {
+			continue
+		}
+		if q.ExcludedWeekday != nil && s.StartTime.Weekday() == *q.ExcludedWeekday {
+			continue
+		}
+		if claims[slotKey(s.DoctorID, s.StartTime)] {
+			continue
+		}
+		result = append(result, s)
+		if len(result) >= q.Limit {
+			break
 		}
 	}
-
-	return result
+	return result, nil
 }
 
-// HoldSlot ставит временную блокировку на слот на время диалога
-func (sm *SlotManager) HoldSlot(doctorID int, slotTime time.Time, sessionID string, ttl time.Duration) (string, error) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+func slotKey(id int, t time.Time) string {
+	return fmt.Sprintf("%d:%s", id, t.UTC().Format(time.RFC3339))
+}
 
-	sm.cleanupExpiredHolds()
-
-	key := sm.formatSlotKey(doctorID, slotTime)
-	now := time.Now()
-
-	if sm.bookedSlots[key] {
-		return "", fmt.Errorf("слот уже занят")
+func (sm *SlotManager) HoldSlot(id int, at time.Time, owner string, ttl time.Duration) (string, error) {
+	if owner == "" || ttl <= 0 {
+		return "", ErrUnavailable
 	}
-
-	if hold, ok := sm.heldSlots[key]; ok && hold.expiresAt.After(now) && hold.sessionID != sessionID {
-		return "", fmt.Errorf("слот временно заблокирован другим пациентом")
+	if !sm.bookable[slotKey(id, at)] || at.Before(time.Now().Add(30*time.Minute)) {
+		return "", ErrUnavailable
 	}
-
-	sm.heldSlots[key] = slotHold{
-		sessionID: sessionID,
-		expiresAt: now.Add(ttl),
+	res, err := sm.store.DB.Exec(`INSERT INTO slot_claims(doctor_id,starts_at,owner,status,expires_at) VALUES(?,?,?,'held',?)
+ ON CONFLICT(doctor_id,starts_at) DO UPDATE SET owner=excluded.owner,status='held',expires_at=excluded.expires_at
+ WHERE slot_claims.status='held' AND (slot_claims.expires_at<=? OR slot_claims.owner=excluded.owner)`, id, at.UTC().Format(time.RFC3339), owner, time.Now().Add(ttl).Unix(), time.Now().Unix())
+	if err != nil {
+		return "", err
 	}
-
-	return key, nil
-}
-
-// ReleaseSlot освобождает временную блокировку слота
-func (sm *SlotManager) ReleaseSlot(key string, sessionID string) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	if hold, ok := sm.heldSlots[key]; ok && hold.sessionID == sessionID {
-		delete(sm.heldSlots, key)
+	n, err := res.RowsAffected()
+	if err != nil {
+		return "", err
 	}
+	if n != 1 {
+		return "", ErrUnavailable
+	}
+	return slotKey(id, at), nil
 }
 
-// CommitBooking окончательно фиксирует запись в локальной сетке
-func (sm *SlotManager) CommitBooking(doctorID int, slotTime time.Time) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	key := sm.formatSlotKey(doctorID, slotTime)
-	sm.bookedSlots[key] = true
-	delete(sm.heldSlots, key)
+func (sm *SlotManager) Release(ctx context.Context, owner string) error {
+	_, err := sm.store.DB.ExecContext(ctx, "DELETE FROM slot_claims WHERE owner=? AND status='held'", owner)
+	return err
 }
-
-// CancelBooking освобождает слот при отмене записи
-func (sm *SlotManager) CancelBooking(doctorID int, slotTime time.Time) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	key := sm.formatSlotKey(doctorID, slotTime)
-	delete(sm.bookedSlots, key)
-	delete(sm.heldSlots, key)
+func (sm *SlotManager) MarkPending(ctx context.Context, s models.Slot, owner string) error {
+	if !sm.bookable[slotKey(s.DoctorID, s.StartTime)] || s.StartTime.Before(time.Now().Add(30*time.Minute)) {
+		return ErrUnavailable
+	}
+	r, err := sm.store.DB.ExecContext(ctx, "UPDATE slot_claims SET status='pending' WHERE doctor_id=? AND starts_at=? AND owner=? AND status='held' AND expires_at>?", s.DoctorID, s.StartTime.UTC().Format(time.RFC3339), owner, time.Now().Unix())
+	if err != nil {
+		return err
+	}
+	n, _ := r.RowsAffected()
+	if n != 1 {
+		return ErrUnavailable
+	}
+	return nil
 }
-
-func (sm *SlotManager) cleanupExpiredHolds() {
-	now := time.Now()
-	for k, h := range sm.heldSlots {
-		if h.expiresAt.Before(now) {
-			delete(sm.heldSlots, k)
+func (sm *SlotManager) Resolve(ctx context.Context, s models.Slot, owner string, visitID int, uncertain bool) error {
+	status := "booked"
+	if uncertain {
+		status = "uncertain"
+	}
+	if visitID == 0 && !uncertain {
+		_, err := sm.store.DB.ExecContext(ctx, "DELETE FROM slot_claims WHERE doctor_id=? AND starts_at=? AND owner=? AND status='pending'", s.DoctorID, s.StartTime.UTC().Format(time.RFC3339), owner)
+		return err
+	}
+	tx, err := sm.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if visitID > 0 {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM slot_claims WHERE visit_id=? AND NOT(doctor_id=? AND starts_at=?)", visitID, s.DoctorID, s.StartTime.UTC().Format(time.RFC3339)); err != nil {
+			return err
 		}
 	}
+	r, err := tx.ExecContext(ctx, "UPDATE slot_claims SET status=?,visit_id=?,expires_at=0 WHERE doctor_id=? AND starts_at=? AND owner=? AND status='pending'", status, visitID, s.DoctorID, s.StartTime.UTC().Format(time.RFC3339), owner)
+	if err != nil {
+		return err
+	}
+	n, _ := r.RowsAffected()
+	if n != 1 {
+		return ErrUnavailable
+	}
+	return tx.Commit()
 }
-
-func (sm *SlotManager) formatSlotKey(docID int, t time.Time) string {
-	return fmt.Sprintf("%d:%s", docID, t.Format("2006-01-02-15:04"))
+func (sm *SlotManager) Cancel(ctx context.Context, visitID int) error {
+	_, err := sm.store.DB.ExecContext(ctx, "DELETE FROM slot_claims WHERE visit_id=? AND status='booked'", visitID)
+	return err
 }
-
+func (sm *SlotManager) SyncVisits(ctx context.Context, visits []models.Visit) error {
+	tx, err := sm.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "DELETE FROM slot_claims WHERE status='booked'"); err != nil {
+		return err
+	}
+	for _, v := range visits {
+		if v.Status != models.VisitPlanned {
+			continue
+		}
+		at, err := models.ParseDateTime(v.ScheduledAt)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO slot_claims(doctor_id,starts_at,owner,status,visit_id) VALUES(?,?,'','booked',?)
+ ON CONFLICT(doctor_id,starts_at) DO UPDATE SET status='booked',visit_id=excluded.visit_id,expires_at=0`, v.Doctor.ID, at.UTC().Format(time.RFC3339), v.ID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+func (sm *SlotManager) IsDirectBookingAllowed(s string) bool {
+	s = strings.TrimPrefix(models.SpecialtyKey(s), "детский ")
+	for _, spec := range []string{"терапевт", "педиатр", "хирург", "офтальмолог", "оториноларинголог", "акушер-гинеколог", "стоматолог", "стоматолог-терапевт", "дерматовенеролог", "лор"} {
+		if s == spec {
+			return true
+		}
+	}
+	return false
+}
 func (sm *SlotManager) GetDoctor(id int) (models.Doctor, bool) {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	d, ok := sm.doctors[id]
-	return d, ok
-}
-
-func (sm *SlotManager) ListDoctors() []models.Doctor {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	list := make([]models.Doctor, 0, len(sm.doctors))
 	for _, d := range sm.doctors {
-		list = append(list, d)
+		if d.ID == id {
+			return d, true
+		}
 	}
-	return list
+	return models.Doctor{}, false
+}
+func (sm *SlotManager) ListDoctors() []models.Doctor {
+	return append([]models.Doctor(nil), sm.doctors...)
 }

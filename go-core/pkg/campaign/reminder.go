@@ -2,134 +2,226 @@ package campaign
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
-	"strings"
-	"sync"
+	"log/slog"
 	"time"
 
 	"github.com/himera/tochka-voice/go-core/pkg/misclient"
 	"github.com/himera/tochka-voice/go-core/pkg/models"
-	"github.com/himera/tochka-voice/go-core/pkg/slotmgr"
+	"github.com/himera/tochka-voice/go-core/pkg/storage"
+	"github.com/himera/tochka-voice/go-core/pkg/telephony"
 )
 
-type ReminderTask struct {
-	VisitID       int
-	ClientID      int
-	PatientName   string
-	Phone         string
-	DoctorName    string
-	Specialty     string
-	Room          string
-	ScheduledAt   string
-	AttemptCount  int
-	LastAttemptAt time.Time
-	Status        string // PENDING, CONFIRMED, RESCHEDULED, CANCELLED, NO_ANSWER
+type Dialer interface {
+	Originate(context.Context, string, int) error
 }
-
-type ReminderCampaign struct {
-	mu            sync.Mutex
-	misClient     misclient.MISClient
-	slotMgr       *slotmgr.SlotManager
-	tasks         map[int]*ReminderTask
+type Runner struct {
+	store         *storage.Store
+	mis           misclient.MISClient
+	dialer        Dialer
+	holidays      map[string]bool
+	allowDemo     bool
 	maxConcurrent int
-	activeCalls   int
 }
 
-func NewReminderCampaign(mc misclient.MISClient, sm *slotmgr.SlotManager, maxConcurrent int) *ReminderCampaign {
-	if maxConcurrent <= 0 {
-		maxConcurrent = 2 // Не более 2 исходящих линий одновременно
-	}
-	return &ReminderCampaign{
-		misClient:     mc,
-		slotMgr:       sm,
-		tasks:         make(map[int]*ReminderTask),
-		maxConcurrent: maxConcurrent,
-	}
+func New(s *storage.Store, m misclient.MISClient, d Dialer, holidays map[string]bool, allowDemo bool) *Runner {
+	return &Runner{store: s, mis: m, dialer: d, holidays: holidays, allowDemo: allowDemo, maxConcurrent: 2}
 }
 
-// IsAllowedCallingHour проверяет разрешенные часы по регламенту С-10
-// Будни 10:00–19:00, сб 10:00–15:00, вс и праздники — запрещено
 func IsAllowedCallingHour(t time.Time) bool {
-	weekday := t.Weekday()
-	if weekday == time.Sunday {
+	t = t.In(models.ClinicLocation)
+	if t.Weekday() == time.Sunday {
 		return false
 	}
-	h := t.Hour()
-	if weekday == time.Saturday {
-		return h >= 10 && h < 15
+	end := 19
+	if t.Weekday() == time.Saturday {
+		end = 15
 	}
-	return h >= 10 && h < 19
+	return t.Hour() >= 10 && t.Hour() < end
+}
+func (r *Runner) allowed(t time.Time) bool {
+	return IsAllowedCallingHour(t) && !r.holidays[t.In(models.ClinicLocation).Format("2006-01-02")]
+}
+func (r *Runner) previousBusinessDay(t time.Time) time.Time {
+	for i := 0; i < 370; i++ {
+		t = t.AddDate(0, 0, -1)
+		if t.Weekday() != time.Saturday && t.Weekday() != time.Sunday && !r.holidays[t.Format("2006-01-02")] {
+			return t
+		}
+	}
+	return t
 }
 
-// AddTask добавляет визит в очередь обзвона
-func (rc *ReminderCampaign) AddTask(task ReminderTask) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-	task.Status = "PENDING"
-	rc.tasks[task.VisitID] = &task
-}
-
-// GetPendingTasks возвращает задачи, готовые к звонку
-func (rc *ReminderCampaign) GetPendingTasks() []*ReminderTask {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-
-	now := time.Now()
-	if !IsAllowedCallingHour(now) {
+func (r *Runner) Schedule(ctx context.Context, now time.Time) error {
+	if !r.allowed(now) {
 		return nil
 	}
+	visits, err := r.mis.ListVisits(ctx, 0, models.VisitPlanned)
+	if err != nil {
+		return err
+	}
+	today := now.In(models.ClinicLocation).Format("02.01.2006")
+	for _, v := range visits {
+		at, err := models.ParseDateTime(v.ScheduledAt)
+		if err != nil {
+			return err
+		}
+		if !at.After(now) || r.previousBusinessDay(at).Format("02.01.2006") != today {
+			continue
+		}
+		contact, err := r.store.Contact(ctx, v.ClientID)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !contact.ReminderConsent {
+			continue
+		}
+		if _, err = r.store.DB.ExecContext(ctx, "INSERT OR IGNORE INTO reminders(visit_id,scheduled_at) VALUES(?,?)", v.ID, v.ScheduledAt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	var ready []*ReminderTask
-	for _, t := range rc.tasks {
-		if t.Status == "PENDING" && t.AttemptCount < 2 {
-			// Интервал не менее 2 часов между попытками
-			if t.AttemptCount == 0 || now.Sub(t.LastAttemptAt) >= 2*time.Hour {
-				ready = append(ready, t)
-				if len(ready) >= rc.maxConcurrent {
+func (r *Runner) Dial(ctx context.Context, id int, now time.Time) error {
+	if !r.allowed(now) && !r.allowDemo {
+		return errors.New("calling window is closed")
+	}
+	if r.dialer == nil {
+		return errors.New("outbound telephony is not configured")
+	}
+	v, err := r.mis.GetVisit(ctx, id)
+	if err != nil {
+		return err
+	}
+	if v.Status != models.VisitPlanned {
+		return errors.New("visit is not planned")
+	}
+	contact, err := r.store.Contact(ctx, v.ClientID)
+	if err != nil {
+		return err
+	}
+	if !contact.ReminderConsent || !telephony.ValidEndpoint(contact.Endpoint) {
+		return errors.New("reminder consent and a valid endpoint are required")
+	}
+	at, err := models.ParseDateTime(v.ScheduledAt)
+	if err != nil || !at.After(now) {
+		return errors.New("visit must be in the future")
+	}
+	if _, err = r.store.DB.ExecContext(ctx, "INSERT OR IGNORE INTO reminders(visit_id,scheduled_at) VALUES(?,?)", v.ID, v.ScheduledAt); err != nil {
+		return err
+	}
+	return r.dispatch(ctx, id, now)
+}
+
+func (r *Runner) dispatch(ctx context.Context, id int, now time.Time) error {
+	if r.dialer == nil {
+		return nil
+	}
+	if _, err := r.store.DB.ExecContext(ctx, "UPDATE reminders SET status=CASE WHEN attempts>=2 THEN 'NO_ANSWER' ELSE 'PENDING' END WHERE status='DIALING' AND lease_until<=?", now.Unix()); err != nil {
+		return err
+	}
+	tx, err := r.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var active int
+	if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM reminders WHERE status='DIALING'").Scan(&active); err != nil {
+		return err
+	}
+	if active >= r.maxConcurrent {
+		return nil
+	}
+	var visitID int
+	var at string
+	query := "SELECT visit_id,scheduled_at FROM reminders WHERE status='PENDING' AND attempts<2 AND next_attempt<=?"
+	args := []any{now.Unix()}
+	if id > 0 {
+		query += " AND visit_id=?"
+		args = append(args, id)
+	}
+	query += " ORDER BY scheduled_at,visit_id LIMIT 1"
+	if err = tx.QueryRowContext(ctx, query, args...).Scan(&visitID, &at); errors.Is(err, sql.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "UPDATE reminders SET status='DIALING',attempts=attempts+1,next_attempt=?,lease_until=? WHERE visit_id=? AND scheduled_at=?", now.Add(2*time.Hour).Unix(), now.Add(4*time.Minute).Unix(), visitID, at); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	v, err := r.mis.GetVisit(ctx, visitID)
+	if err != nil {
+		return err
+	}
+	if v.Status != models.VisitPlanned || v.ScheduledAt != at {
+		return r.Outcome(ctx, visitID, "STALE")
+	}
+	visitTime, err := models.ParseDateTime(v.ScheduledAt)
+	if err != nil {
+		return err
+	}
+	if !visitTime.After(now) {
+		return r.Outcome(ctx, visitID, "STALE")
+	}
+	contact, err := r.store.Contact(ctx, v.ClientID)
+	if err != nil {
+		return err
+	}
+	if !contact.ReminderConsent {
+		return r.Outcome(ctx, visitID, "OPTED_OUT")
+	}
+	if err = r.dialer.Originate(ctx, contact.Endpoint, visitID); err != nil {
+		return fmt.Errorf("originate reminder: %w", err)
+	}
+	return nil
+}
+
+func (r *Runner) Outcome(ctx context.Context, id int, status string) error {
+	switch status {
+	case "CONFIRMED", "RESCHEDULED", "CANCELLED", "WRONG_PERSON", "STALE", "OPTED_OUT":
+	default:
+		return nil
+	}
+	_, err := r.store.DB.ExecContext(ctx, "UPDATE reminders SET status=?,lease_until=0 WHERE visit_id=? AND status='DIALING'", status, id)
+	return err
+}
+func (r *Runner) Run(ctx context.Context) {
+	if r.dialer == nil {
+		return
+	}
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	lastSync := time.Time{}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			if !r.allowed(now) {
+				continue
+			}
+			if now.Sub(lastSync) >= 30*time.Minute {
+				if err := r.Schedule(ctx, now); err != nil {
+					slog.Warn("schedule reminders", "error", err)
+				} else {
+					lastSync = now
+				}
+			}
+			for i := 0; i < r.maxConcurrent; i++ {
+				if err := r.dispatch(ctx, 0, now); err != nil {
+					slog.Warn("dispatch reminder", "error", err)
 					break
 				}
 			}
 		}
 	}
-	return ready
-}
-
-// FormatReminderGreeting формирует начальную реплику для С-10
-func (rc *ReminderCampaign) FormatReminderGreeting(task *ReminderTask) string {
-	nameParts := strings.Fields(task.PatientName)
-	greetingName := task.PatientName
-	if len(nameParts) >= 2 {
-		// "Иван Иванович" без фамилии по регламенту п. 3.5
-		greetingName = strings.Join(nameParts[1:], " ")
-	}
-
-	return fmt.Sprintf("Здравствуйте, %s! Регистратура поликлиники номер семь. Напоминаем о вашей записи к %s %s завтра в %s, кабинет %s. Сможете подойти?",
-		greetingName, task.Specialty, task.DoctorName, task.ScheduledAt, task.Room)
-}
-
-// HandlePatientResponse обрабатывает ответ пациента на звонок-напоминание
-func (rc *ReminderCampaign) HandlePatientResponse(ctx context.Context, task *ReminderTask, responseText string) (string, bool) {
-	norm := strings.ToLower(responseText)
-
-	if strings.Contains(norm, "да") || strings.Contains(norm, "приду") || strings.Contains(norm, "буду") || strings.Contains(norm, "смогу") {
-		rc.mu.Lock()
-		task.Status = "CONFIRMED"
-		rc.mu.Unlock()
-		return "Отлично! Ждём вас завтра. Не забудьте паспорт и полис ОМС. Всего доброго!", true
-	}
-
-	if strings.Contains(norm, "нет") || strings.Contains(norm, "не смогу") || strings.Contains(norm, "отменит") {
-		// Отмена записи в МИС и освобождение слота
-		cancelStatus := "Отменена"
-		_, _ = rc.misClient.UpdateVisit(ctx, task.VisitID, models.VisitUpdate{
-			Status: &cancelStatus,
-		})
-
-		rc.mu.Lock()
-		task.Status = "CANCELLED"
-		rc.mu.Unlock()
-		return "Хорошо, я отменила запись. Если понадобится новое время, перезвоните нам в любое время. Будьте здоровы!", true
-	}
-
-	return "Пожалуйста, подскажите: вы сможете подойти на приём завтра?", false
 }

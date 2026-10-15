@@ -1,133 +1,86 @@
+// Command cli-test is an HTTP dialogue client; it uses the same application as SIP.
 package main
 
 import (
 	"bufio"
-	"context"
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/himera/tochka-voice/go-core/pkg/dialogue"
-	"github.com/himera/tochka-voice/go-core/pkg/llmclient"
-	"github.com/himera/tochka-voice/go-core/pkg/misclient"
-	"github.com/himera/tochka-voice/go-core/pkg/models"
-	"github.com/himera/tochka-voice/go-core/pkg/safety"
-	"github.com/himera/tochka-voice/go-core/pkg/slotmgr"
-	"github.com/himera/tochka-voice/go-core/pkg/telegram"
-)
 
-const (
-	colorReset  = "\033[0m"
-	colorRed    = "\033[31m"
-	colorGreen  = "\033[32m"
-	colorYellow = "\033[33m"
-	colorBlue   = "\033[34m"
-	colorPurple = "\033[35m"
-	colorCyan   = "\033[36m"
+	"github.com/himera/tochka-voice/go-core/pkg/config"
+	"github.com/himera/tochka-voice/go-core/pkg/httpapi"
 )
 
 func main() {
-	fmt.Println(colorCyan + "==========================================================" + colorReset)
-	fmt.Println(colorCyan + "   ГОЛОСОВОЙ АССИСТЕНТ ПОЛИКЛИНИКИ № 7 (CLI TEST RUNNER)  " + colorReset)
-	fmt.Println(colorCyan + "==========================================================" + colorReset)
-	fmt.Println("Интерактивный симулятор телефонного звонка.")
-	fmt.Println("Для завершения звонка введите 'exit' или 'hangup'.")
-
-	// Инициализация сервисов
-	slotMgr := slotmgr.NewSlotManager()
-	mockMIS := misclient.NewMockMISClient()
-	fastGate := safety.NewFastGate()
-	fsm := dialogue.NewFSMController(slotMgr, mockMIS)
-
-	llmCfg := llmclient.LoadConfigFromEnv()
-	llmClient := llmclient.NewUniversalLLMClient(llmCfg)
-	if llmClient.IsEnabled() {
-		fmt.Printf("%s[LLM] Включен провайдер %s (%s)%s\n", colorGreen, llmCfg.Provider, llmCfg.Model, colorReset)
-		fsm.SetLLMClient(llmClient)
-	} else {
-		fmt.Printf("%s[LLM] Офлайн режим (локальный FSM & Regex)%s\n", colorYellow, colorReset)
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
-
-	tgNotifier := telegram.NewNotifier(telegram.LoadConfigFromEnv())
-	if tgNotifier.IsConfigured() {
-		fmt.Printf("%s[TELEGRAM] Оповещения активированы (Категория А -> 103, Жалобы -> ст. администратор)%s\n", colorGreen, colorReset)
+}
+func run() error {
+	if err := config.LoadDotEnv(".env"); err != nil {
+		return err
 	}
-
-	ctx := context.Background()
-	reader := bufio.NewReader(os.Stdin)
-
-	// Создаем сессию звонка
-	session := &models.CallSession{
-		CallID:       uuid.New().String(),
-		CallerNumber: "+7 (999) 123-45-67",
-		ChannelID:    "cli-test-channel",
-		CurrentState: "STATE_MAIN_MENU",
-		Slots:        make(map[string]interface{}),
-		CreatedAt:    time.Now(),
+	base := os.Getenv("CORE_URL")
+	if base == "" {
+		base = "http://127.0.0.1:8080"
 	}
-
-	// 1. Приветствие
-	initResult := fsm.InitialGreeting()
-	fmt.Printf("%s[БОТ]: %s%s\n\n", colorGreen, initResult.BotSpeech, colorReset)
-	session.CurrentState = initResult.NextState
-
-	for {
-		fmt.Printf("%s[ВЫ (Пациент)]: %s", colorYellow, colorReset)
-		input, err := reader.ReadString('\n')
+	client := &http.Client{Timeout: 40 * time.Second}
+	post := func(path string, data any) (httpapi.Response, error) {
+		b, err := json.Marshal(data)
 		if err != nil {
-			break
+			return httpapi.Response{}, err
 		}
-		input = strings.TrimSpace(input)
-		if input == "" {
-			continue
+		req, err := http.NewRequest(http.MethodPost, base+path, bytes.NewReader(b))
+		if err != nil {
+			return httpapi.Response{}, err
 		}
-
-		if input == "exit" || input == "hangup" || input == "пока" {
-			fmt.Println(colorRed + "\n[ТЕЛЕФОНИЯ]: Звонок завершён (Hangup)." + colorReset)
-			break
+		req.Header.Set("Content-Type", "application/json")
+		if token := os.Getenv("CORE_API_TOKEN"); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
 		}
-
-		// 1. Проверка FAST-GATE на Красные Флаги (103/112 и Оператор)
-		safetyCheck := fastGate.Check(input)
-		if safetyCheck.Level != models.FlagNone {
-			fmt.Printf("%s[FAST-GATE ТРИГГЕР]: %s (Уровень: %s, Маршрут: %s)%s\n",
-				colorPurple, safetyCheck.ActionCode, safetyCheck.Level, safetyCheck.RouteTarget, colorReset)
-			fmt.Printf("%s[БОТ]: %s%s\n\n", colorRed, safetyCheck.BotResponse, colorReset)
-
-			if safetyCheck.Level == models.FlagCategoryA {
-				_ = tgNotifier.NotifyCategoryA(ctx, session.CallID, session.CallerNumber, input)
-				fmt.Printf("%s[ТЕЛЕФОНИЯ]: Прерывание сценария. Экстренный перевод на 103/112 (кабинет %s)...%s\n\n",
-					colorBlue, safetyCheck.RouteTarget, colorReset)
-				break
-			}
-			if safetyCheck.Level == models.FlagOperatorReq {
-				_ = tgNotifier.NotifyComplaint(ctx, session.CallID, session.CallerNumber, input)
-				fmt.Printf("%s[ТЕЛЕФОНИЯ]: Перевод звонка на сотрудника %s...%s\n\n",
-					colorBlue, safetyCheck.RouteTarget, colorReset)
-				break
-			}
-			continue
+		resp, err := client.Do(req)
+		if err != nil {
+			return httpapi.Response{}, err
 		}
-
-		// 2. Обработка шага FSM
-		res := fsm.ProcessInput(ctx, session, input)
-		fmt.Printf("%s[БОТ]: %s%s\n", colorGreen, res.BotSpeech, colorReset)
-		fmt.Printf("%s[STATE]: %s (Сценарий: %s)%s\n\n",
-			colorBlue, res.NextState, session.CurrentScenario, colorReset)
-
-		session.CurrentState = res.NextState
-
-		if res.TransferTarget != "" {
-			fmt.Printf("%s[ТЕЛЕФОНИЯ]: Перевод звонка на оператора (доб. %s)%s\n\n",
-				colorBlue, res.TransferTarget, colorReset)
-			break
+		defer resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			return httpapi.Response{}, fmt.Errorf("core HTTP %d", resp.StatusCode)
 		}
-
-		if res.ShouldHangup {
-			fmt.Println(colorRed + "[ТЕЛЕФОНИЯ]: Ассистент положил трубку. До свидания!" + colorReset)
-			break
+		var result httpapi.Response
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		return result, err
+	}
+	response, err := post("/api/dialogue/start", map[string]string{})
+	if err != nil {
+		return err
+	}
+	id := response.CallID
+	defer func() { _, _ = post("/api/dialogue/"+id+"/end", nil) }()
+	fmt.Println(response.BotSpeech)
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		fmt.Print("> ")
+		if !scanner.Scan() {
+			return scanner.Err()
+		}
+		text := strings.TrimSpace(scanner.Text())
+		if text == "exit" {
+			return nil
+		}
+		response, err = post("/api/dialogue/turn", map[string]string{"call_id": id, "turn_id": uuid.NewString(), "text": text})
+		if err != nil {
+			return err
+		}
+		fmt.Println(response.BotSpeech)
+		if response.ShouldHangup || response.TransferTarget != "" {
+			return nil
 		}
 	}
 }

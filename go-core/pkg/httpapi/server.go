@@ -1,0 +1,558 @@
+// Package httpapi exposes the application boundary used by the phone bridge and
+// deterministic integration tests. Transcript tracing requires an explicit local debug sink.
+package httpapi
+
+import (
+	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"mime"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/himera/tochka-voice/go-core/pkg/campaign"
+	"github.com/himera/tochka-voice/go-core/pkg/dialogue"
+	"github.com/himera/tochka-voice/go-core/pkg/misclient"
+	"github.com/himera/tochka-voice/go-core/pkg/models"
+	"github.com/himera/tochka-voice/go-core/pkg/safety"
+	"github.com/himera/tochka-voice/go-core/pkg/slotmgr"
+	"github.com/himera/tochka-voice/go-core/pkg/storage"
+	"github.com/himera/tochka-voice/go-core/pkg/telephony"
+)
+
+type Redirector interface {
+	Redirect(context.Context, string, string) error
+}
+type Config struct {
+	FSM         *dialogue.FSMController
+	MIS         misclient.MISClient
+	Slots       *slotmgr.SlotManager
+	Store       *storage.Store
+	Campaign    *campaign.Runner
+	Token       string
+	Mode        string
+	MaxSessions int
+	SessionTTL  time.Duration
+	Redirector  Redirector
+	Escalate    dialogue.EscalateFunc
+	Trace       *slog.Logger
+}
+type Response struct {
+	dialogue.StepResult
+	CallID   string              `json:"call_id"`
+	Scenario models.ScenarioCode `json:"scenario,omitempty"`
+	TurnID   string              `json:"turn_id,omitempty"`
+}
+type cached struct {
+	hash     [32]byte
+	response Response
+}
+type session struct {
+	mu          sync.Mutex
+	call        *models.CallSession
+	cache       map[string]cached
+	order       []string
+	id          string
+	channel     string
+	caller      string
+	control     sync.Mutex
+	interrupted atomic.Pointer[interruptResult]
+	closed      atomic.Bool
+	patientID   atomic.Int64
+}
+type interruptResult struct {
+	result   dialogue.StepResult
+	priority int
+}
+type Server struct {
+	cfg      Config
+	mu       sync.Mutex
+	sessions map[string]*session
+	handler  http.Handler
+	gate     *safety.FastGate
+}
+
+func New(cfg Config) *Server {
+	if cfg.MaxSessions <= 0 {
+		cfg.MaxSessions = 256
+	}
+	if cfg.SessionTTL <= 0 {
+		cfg.SessionTTL = 10 * time.Minute
+	}
+	s := &Server{cfg: cfg, sessions: map[string]*session{}, gate: safety.NewFastGate()}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("GET /readyz", s.health)
+	mux.HandleFunc("POST /api/dialogue/start", s.start)
+	mux.HandleFunc("POST /api/dialogue/turn", s.turn)
+	mux.HandleFunc("POST /api/dialogue/{id}/end", s.end)
+	mux.HandleFunc("POST /api/dialogue/{id}/transfer", s.transfer)
+	mux.HandleFunc("POST /api/dialogue/{id}/interrupt", s.interrupt)
+	mux.HandleFunc("GET /api/stats", s.stats)
+	mux.HandleFunc("GET /api/doctors", s.doctors)
+	mux.HandleFunc("GET /api/visits", s.visits)
+	mux.HandleFunc("GET /api/clients/{id}", s.client)
+	mux.HandleFunc("PUT /api/contacts/{id}", s.contact)
+	mux.HandleFunc("POST /api/reminders/dial", s.dial)
+	mux.HandleFunc("GET /api/escalations", s.escalations)
+	s.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "no-store")
+		if cfg.Token != "" && r.URL.Path != "/healthz" {
+			want := sha256.Sum256([]byte(cfg.Token))
+			got := sha256.Sum256([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
+			if subtle.ConstantTimeCompare(want[:], got[:]) != 1 {
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				problem(w, 401, "unauthorized")
+				return
+			}
+		}
+		mux.ServeHTTP(w, r)
+	})
+	return s
+}
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
+func write(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		slog.Debug("client disconnected during response")
+	}
+}
+func problem(w http.ResponseWriter, status int, message string) {
+	write(w, status, map[string]string{"error": message})
+}
+func decode(w http.ResponseWriter, r *http.Request, out any) bool {
+	t, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || t != "application/json" {
+		problem(w, 415, "Content-Type must be application/json")
+		return false
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	d := json.NewDecoder(r.Body)
+	d.DisallowUnknownFields()
+	if err = d.Decode(out); err != nil {
+		problem(w, 400, "invalid JSON request")
+		return false
+	}
+	if err = d.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		problem(w, 400, "request must contain one JSON object")
+		return false
+	}
+	return true
+}
+func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	c, cancel := context.WithTimeout(r.Context(), time.Second)
+	defer cancel()
+	if err := s.cfg.Store.DB.PingContext(c); err != nil {
+		problem(w, 503, "storage unavailable")
+		return
+	}
+	write(w, 200, map[string]any{"status": "ok", "mode": s.cfg.Mode, "doctors": len(s.cfg.Slots.ListDoctors())})
+}
+func (s *Server) start(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CallerNumber    string `json:"caller_number"`
+		ChannelID       string `json:"channel_id"`
+		OutboundVisitID int    `json:"outbound_visit_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if len(req.CallerNumber) > 100 || len(req.ChannelID) > 200 || req.OutboundVisitID < 0 {
+		problem(w, 400, "invalid call metadata")
+		return
+	}
+	s.mu.Lock()
+	if len(s.sessions) >= s.cfg.MaxSessions {
+		s.mu.Unlock()
+		problem(w, 503, "session capacity reached")
+		return
+	}
+	now := time.Now()
+	call := &models.CallSession{CallID: uuid.NewString(), CallerNumber: req.CallerNumber, ChannelID: req.ChannelID, CurrentState: dialogue.StateMenu, CreatedAt: now, LastActivityAt: now}
+	entry := &session{call: call, cache: map[string]cached{}, id: call.CallID, channel: call.ChannelID, caller: call.CallerNumber}
+	entry.mu.Lock()
+	s.sessions[call.CallID] = entry
+	s.mu.Unlock()
+	defer entry.mu.Unlock()
+	result := s.cfg.FSM.InitialGreeting()
+	if req.OutboundVisitID > 0 {
+		result = s.cfg.FSM.StartReminder(r.Context(), call, req.OutboundVisitID)
+	}
+	call.CurrentState = result.NextState
+	call.PendingPrompt = result.BotSpeech
+	if call.Patient != nil {
+		entry.patientID.Store(int64(call.Patient.ID))
+	}
+	if err := s.cfg.Store.Event(r.Context(), "CALL_STARTED"); err != nil {
+		slog.Error("record call metric", "error", err)
+	}
+	write(w, 201, Response{StepResult: result, CallID: call.CallID, Scenario: call.CurrentScenario})
+	if s.cfg.Trace != nil {
+		s.cfg.Trace.Info("call_started", "call_id", call.CallID, "state", result.NextState, "bot_speech", result.BotSpeech)
+	}
+}
+func (s *Server) find(id string) *session { s.mu.Lock(); defer s.mu.Unlock(); return s.sessions[id] }
+func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CallID string `json:"call_id"`
+		Text   string `json:"text"`
+		TurnID string `json:"turn_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if _, err := uuid.Parse(req.CallID); err != nil || len([]rune(req.Text)) > 2000 || len(req.TurnID) > 100 {
+		problem(w, 400, "invalid turn parameters")
+		return
+	}
+	e := s.find(req.CallID)
+	if e == nil {
+		problem(w, 404, "unknown or expired call")
+		return
+	}
+	if pending := e.interrupted.Load(); pending != nil {
+		write(w, 200, Response{StepResult: pending.result, CallID: e.id, TurnID: req.TurnID})
+		return
+	}
+	if !e.mu.TryLock() {
+		problem(w, 409, "another turn is in progress")
+		return
+	}
+	defer e.mu.Unlock()
+	hash := sha256.Sum256([]byte(req.Text))
+	if c, ok := e.cache[req.TurnID]; req.TurnID != "" && ok {
+		if c.hash != hash {
+			problem(w, 409, "turn_id was already used for another utterance")
+			return
+		}
+		write(w, 200, c.response)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
+	defer cancel()
+	previousState := e.call.CurrentState
+	started := time.Now()
+	result := s.cfg.FSM.ProcessInput(ctx, e.call, req.Text)
+	patientID := int64(0)
+	if e.call.Patient != nil {
+		patientID = int64(e.call.Patient.ID)
+	}
+	e.patientID.Store(patientID)
+	response := Response{StepResult: result, CallID: e.call.CallID, Scenario: e.call.CurrentScenario, TurnID: req.TurnID}
+	if pending := e.interrupted.Load(); pending != nil {
+		response.StepResult = pending.result
+		e.call.CurrentState = dialogue.StateTransfer
+		e.call.TransferTarget = pending.result.TransferTarget
+		if err := s.cfg.Slots.Release(context.WithoutCancel(ctx), e.id); err != nil {
+			slog.Error("release interrupted hold", "error", err)
+		}
+	}
+	if req.TurnID != "" {
+		e.cache[req.TurnID] = cached{hash: hash, response: response}
+		e.order = append(e.order, req.TurnID)
+		if len(e.order) > 16 {
+			delete(e.cache, e.order[0])
+			e.order = e.order[1:]
+		}
+	}
+	if result.Outcome != "" {
+		if err := s.cfg.Store.Event(context.WithoutCancel(ctx), result.Outcome); err != nil {
+			slog.Error("record outcome metric", "error", err)
+		}
+		if e.call.OutboundVisitID > 0 && s.cfg.Campaign != nil {
+			if err := s.cfg.Campaign.Outcome(context.WithoutCancel(ctx), e.call.OutboundVisitID, result.Outcome); err != nil {
+				slog.Error("record reminder outcome", "error", err)
+			}
+		}
+	}
+	if s.cfg.Trace != nil {
+		s.cfg.Trace.Info("dialogue_turn", "call_id", e.id, "turn_id", req.TurnID,
+			"text", req.Text, "parsed_intent", dialogue.ParseIntent(req.Text),
+			"previous_state", previousState, "state", response.NextState, "scenario", response.Scenario,
+			"fail_count", e.call.FailCount, "bot_speech", response.BotSpeech,
+			"outcome", response.Outcome, "reason_code", response.ReasonCode,
+			"transfer_target", response.TransferTarget, "latency_ms", time.Since(started).Milliseconds(),
+			"nlu_attempted", e.call.NLUAttempted, "llm_used", response.LLMUsed, "nlu_intent", e.call.NLUIntent, "nlu_latency_ms", e.call.NLULatencyMS, "nlu_error", e.call.NLUError)
+	}
+	write(w, 200, response)
+}
+func (s *Server) end(w http.ResponseWriter, r *http.Request) {
+	e := s.find(r.PathValue("id"))
+	if e == nil {
+		problem(w, 404, "unknown call")
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := s.cfg.Slots.Release(r.Context(), e.call.CallID); err != nil {
+		problem(w, 503, "could not release call resources")
+		return
+	}
+	e.call.CurrentState = dialogue.StateDone
+	e.closed.Store(true)
+	e.call.LastActivityAt = time.Now()
+	write(w, 200, map[string]string{"status": "closed"})
+}
+
+func (s *Server) transfer(w http.ResponseWriter, r *http.Request) {
+	e := s.find(r.PathValue("id"))
+	if e == nil {
+		problem(w, 404, "unknown call")
+		return
+	}
+	if pending := e.interrupted.Load(); pending != nil {
+		if s.cfg.Redirector == nil {
+			problem(w, 503, "operator redirect is not configured")
+			return
+		}
+		if err := s.cfg.Redirector.Redirect(r.Context(), e.channel, pending.result.TransferTarget); err != nil {
+			problem(w, 502, "operator redirect failed; escalation remains queued")
+			return
+		}
+		write(w, 200, map[string]string{"status": "transferred"})
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.call.CurrentState != dialogue.StateTransfer || e.call.TransferTarget == "" {
+		problem(w, 409, "call is not awaiting transfer")
+		return
+	}
+	if s.cfg.Redirector == nil {
+		problem(w, 503, "operator redirect is not configured")
+		return
+	}
+	if err := s.cfg.Redirector.Redirect(r.Context(), e.call.ChannelID, e.call.TransferTarget); err != nil {
+		problem(w, 502, "operator redirect failed; escalation remains queued")
+		return
+	}
+	write(w, 200, map[string]string{"status": "transferred"})
+}
+
+// interrupt has a separate control lock: an in-flight MIS write must not delay
+// emergency speech or operator handoff. The original mutation still settles.
+func (s *Server) interrupt(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Text string `json:"text"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if len([]rune(req.Text)) > 2000 {
+		problem(w, 400, "utterance is too long")
+		return
+	}
+	e := s.find(r.PathValue("id"))
+	if e == nil {
+		problem(w, 404, "unknown call")
+		return
+	}
+	if e.closed.Load() {
+		problem(w, 410, "call is closed")
+		return
+	}
+	gate := s.gate.Check(req.Text)
+	if gate.Level == models.FlagNone {
+		write(w, 200, map[string]bool{"interrupted": false})
+		return
+	}
+	e.control.Lock()
+	defer e.control.Unlock()
+	if old := e.interrupted.Load(); old != nil && old.priority >= gate.Priority() {
+		write(w, 200, Response{StepResult: old.result, CallID: e.id})
+		return
+	}
+	result := dialogue.StepResult{NextState: dialogue.StateTransfer, BotSpeech: gate.BotResponse, TransferTarget: gate.Extension(), Outcome: "TRANSFERRED"}
+	result.ReasonCode = gate.ActionCode
+	if s.cfg.Escalate != nil {
+		trigger := []rune(gate.MatchedText)
+		if len(trigger) > 200 {
+			trigger = trigger[:200]
+		}
+		reason := gate.ActionCode + "; звонок: " + e.id + "; ANI: " + e.caller + "; триггер: " + string(trigger)
+		if err := s.cfg.Escalate(r.Context(), int(e.patientID.Load()), reason); err == nil {
+			result.EscalationQueued = true
+		} else {
+			slog.Error("persist call interruption", "error", err)
+		}
+	}
+	e.interrupted.Store(&interruptResult{result: result, priority: gate.Priority()})
+	if s.cfg.Trace != nil {
+		s.cfg.Trace.Info("call_interrupted", "call_id", e.id, "text", req.Text, "reason_code", gate.ActionCode, "transfer_target", result.TransferTarget, "bot_speech", result.BotSpeech)
+	}
+	if err := s.cfg.Store.Event(r.Context(), "INTERRUPTED"); err != nil {
+		slog.Error("record interruption", "error", err)
+	}
+	write(w, 200, Response{StepResult: result, CallID: e.id})
+}
+func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
+	counts, err := s.cfg.Store.Stats(r.Context())
+	if err != nil {
+		problem(w, 503, "statistics unavailable")
+		return
+	}
+	s.mu.Lock()
+	n := len(s.sessions)
+	s.mu.Unlock()
+	write(w, 200, map[string]any{"outcomes": counts, "retained_sessions": n, "mode": s.cfg.Mode})
+}
+func (s *Server) doctors(w http.ResponseWriter, r *http.Request) {
+	write(w, 200, s.cfg.Slots.ListDoctors())
+}
+func (s *Server) visits(w http.ResponseWriter, r *http.Request) {
+	v, err := s.cfg.MIS.ListVisits(r.Context(), 0, "")
+	if err != nil {
+		problem(w, 502, "MIS unavailable")
+		return
+	}
+	write(w, 200, v)
+}
+
+func (s *Server) client(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id <= 0 {
+		problem(w, 400, "positive client id required")
+		return
+	}
+	c, err := s.cfg.MIS.GetClient(r.Context(), id)
+	if err != nil {
+		var api *misclient.APIError
+		if errors.As(err, &api) && api.StatusCode == 404 {
+			problem(w, 404, "client not found")
+		} else {
+			problem(w, 502, "MIS unavailable")
+		}
+		return
+	}
+	write(w, 200, c)
+}
+func (s *Server) contact(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Endpoint string `json:"endpoint"`
+		Consent  bool   `json:"reminder_consent"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	id := 0
+	for _, c := range r.PathValue("id") {
+		if c < '0' || c > '9' {
+			problem(w, 400, "invalid client id")
+			return
+		}
+		id = id*10 + int(c-'0')
+		if id > 2147483647 {
+			problem(w, 400, "invalid client id")
+			return
+		}
+	}
+	if id <= 0 || !telephony.ValidEndpoint(req.Endpoint) {
+		problem(w, 400, "valid client id and PJSIP endpoint required")
+		return
+	}
+	if _, err := s.cfg.MIS.GetClient(r.Context(), id); err != nil {
+		problem(w, 404, "client not found")
+		return
+	}
+	if err := s.cfg.Store.SaveContact(r.Context(), storage.Contact{ClientID: id, Endpoint: req.Endpoint, ReminderConsent: req.Consent}); err != nil {
+		problem(w, 503, "contact could not be saved")
+		return
+	}
+	write(w, 200, map[string]string{"status": "saved"})
+}
+func (s *Server) dial(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		VisitID int `json:"visit_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.VisitID <= 0 {
+		problem(w, 400, "positive visit_id required")
+		return
+	}
+	if s.cfg.Campaign == nil {
+		problem(w, 503, "outbound calling unavailable")
+		return
+	}
+	if err := s.cfg.Campaign.Dial(r.Context(), req.VisitID, time.Now()); err != nil {
+		problem(w, 409, err.Error())
+		return
+	}
+	write(w, 202, map[string]string{"status": "queued"})
+}
+func (s *Server) escalations(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.cfg.Store.DB.QueryContext(r.Context(), "SELECT status,COUNT(*) FROM escalations GROUP BY status")
+	if err != nil {
+		problem(w, 503, "outbox unavailable")
+		return
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var status string
+		var n int
+		if err = rows.Scan(&status, &n); err != nil {
+			problem(w, 503, "outbox unavailable")
+			return
+		}
+		counts[status] = n
+	}
+	if rows.Err() != nil {
+		problem(w, 503, "outbox unavailable")
+		return
+	}
+	write(w, 200, counts)
+}
+
+func (s *Server) Expire(ctx context.Context, now time.Time) {
+	s.mu.Lock()
+	entries := make(map[string]*session, len(s.sessions))
+	for id, e := range s.sessions {
+		entries[id] = e
+	}
+	s.mu.Unlock()
+	for id, e := range entries {
+		if !e.mu.TryLock() {
+			continue
+		}
+		ttl := s.cfg.SessionTTL
+		if e.call.CurrentState == dialogue.StateDone || e.call.CurrentState == dialogue.StateTransfer {
+			ttl = time.Minute
+		}
+		if now.Sub(e.call.LastActivityAt) > ttl {
+			if err := s.cfg.Slots.Release(ctx, id); err == nil {
+				s.mu.Lock()
+				delete(s.sessions, id)
+				s.mu.Unlock()
+			} else {
+				slog.Warn("expire call resources", "error", err)
+			}
+		}
+		e.mu.Unlock()
+	}
+}
+func (s *Server) RunJanitor(ctx context.Context) {
+	t := time.NewTicker(15 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			s.Expire(ctx, now)
+		}
+	}
+}

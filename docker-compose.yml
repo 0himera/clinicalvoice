@@ -1,23 +1,18 @@
 services:
-  nats:
-    image: nats:latest
-    container_name: tochka-nats
-    command: ["-js", "-m", "8222"]
-    ports:
-      - "4222:4222" # NATS client
-      - "8222:8222" # HTTP Management / Monitoring
-    restart: unless-stopped
-
   asterisk:
-    image: andrius/asterisk:latest
+    image: andrius/asterisk@sha256:40c285e0332899ff5b6f77e4545aac754efe52bfb7eccfb76cd23f43d7d5e7a6
     container_name: tochka-asterisk
-    network_mode: "host"
+    network_mode: host
     volumes:
       - ./asterisk/pjsip.conf:/etc/asterisk/pjsip.conf:ro
       - ./asterisk/extensions.conf:/etc/asterisk/extensions.conf:ro
-      - ./asterisk/ari.conf:/etc/asterisk/ari.conf:ro
       - ./asterisk/rtp.conf:/etc/asterisk/rtp.conf:ro
       - ./asterisk/http.conf:/etc/asterisk/http.conf:ro
+      - ./var/asterisk/manager.conf:/etc/asterisk/manager.conf:ro
+    healthcheck:
+      test: ["CMD", "asterisk", "-rx", "core show uptime"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
-    depends_on:
-      - nats
+    stop_grace_period: 30s
