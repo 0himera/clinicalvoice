@@ -67,3 +67,47 @@ class FasterWhisperASR:
             factor = gcd(sample_rate, 16000)
             data = resample_poly(data, 16000 // factor, sample_rate // factor).astype(np.float32)
         return self._transcribe(data)
+
+
+class RemoteWhisperASR:
+    def __init__(
+        self,
+        api_url: str | None = None,
+        api_key: str | None = None,
+        model: str = "openai/whisper-large-v3",
+        timeout: float = 15.0,
+        fallback: FasterWhisperASR | None = None,
+    ):
+        import requests
+
+        self._requests = requests
+        self.api_url = api_url or os.getenv(
+            "ASR_API_URL", "https://hub.gigaschool.ru/api/v1/llm/v1/audio/transcriptions"
+        )
+        self.api_key = api_key or os.getenv("ASR_API_KEY") or os.getenv("LLM_API_KEY")
+        self.model = os.getenv("ASR_API_MODEL", model)
+        self.timeout = timeout
+        self.fallback = fallback
+
+    def transcribe_wav(self, wav_bytes: bytes) -> str:
+        if not wav_bytes:
+            return ""
+        if self.api_url and self.api_key:
+            try:
+                headers = {"Authorization": f"Bearer {self.api_key}"}
+                files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
+                data = {"model": self.model, "language": "ru"}
+                resp = self._requests.post(
+                    self.api_url,
+                    headers=headers,
+                    files=files,
+                    data=data,
+                    timeout=self.timeout,
+                )
+                if resp.status_code == 200:
+                    return resp.json().get("text", "").strip()
+            except Exception:
+                pass
+        if self.fallback is not None:
+            return self.fallback.transcribe_wav(wav_bytes)
+        return ""

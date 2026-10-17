@@ -22,11 +22,12 @@ class SileroTTSService:
         self.device = torch.device(device)
         self.speaker = os.getenv("TTS_SPEAKER", speaker)
         self._lock = threading.Lock()
+        model_version = os.getenv("TTS_MODEL_VERSION", "v5_ru")
         repository = f"snakers4/silero-models:{SILERO_REVISION}"
         source = "github"
         if os.getenv("MODELS_OFFLINE", "false") == "true":
             local = Path(torch.hub.get_dir()) / f"snakers4_silero-models_{SILERO_REVISION}"
-            for required in ("hubconf.py", "models.yml", "src/silero/model/v4_ru.pt"):
+            for required in ("hubconf.py", "models.yml"):
                 if not (local / required).is_file():
                     raise RuntimeError("offline Silero cache is incomplete")
             repository, source = str(local), "local"
@@ -35,7 +36,7 @@ class SileroTTSService:
             "silero_tts",
             source=source,
             language="ru",
-            speaker="v4_ru",
+            speaker=model_version,
             trust_repo=True,
             skip_validation=True,
         )

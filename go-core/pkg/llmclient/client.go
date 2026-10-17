@@ -65,6 +65,8 @@ func LoadConfigFromEnv() Config {
 	if baseURL == "" {
 		if provider == "gemini" {
 			baseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
+		} else if provider == "hub" {
+			baseURL = "https://hub.gigaschool.ru/api/v1/llm/v1"
 		} else {
 			baseURL = "http://127.0.0.1:11434/v1"
 		}
@@ -72,6 +74,8 @@ func LoadConfigFromEnv() Config {
 	if model == "" {
 		if provider == "gemini" {
 			model = "gemini-3.5-flash-lite"
+		} else if provider == "hub" {
+			model = "openai/gpt-oss-120b"
 		} else if provider == "ollama" {
 			model = "gemma4:e4b"
 		} else {
@@ -182,13 +186,21 @@ func (c *UniversalLLMClient) Validate() error {
 		return nil
 	}
 	u, err := url.Parse(c.config.BaseURL)
-	if err == nil && c.config.Provider == "gemini" && c.config.AllowRemote && u.Scheme == "https" && u.Host == "generativelanguage.googleapis.com" && u.Path == "/v1beta/openai" && u.RawQuery == "" && u.Fragment == "" && u.User == nil {
-		if c.config.APIKey == "" {
-			return errors.New("LLM_API_KEY or GEMINI_API_KEY is required")
+	if err == nil && c.config.AllowRemote {
+		if c.config.Provider == "gemini" && u.Scheme == "https" && u.Host == "generativelanguage.googleapis.com" && u.Path == "/v1beta/openai" && u.RawQuery == "" && u.Fragment == "" && u.User == nil {
+			if c.config.APIKey == "" {
+				return errors.New("LLM_API_KEY or GEMINI_API_KEY is required")
+			}
+			return nil
 		}
-		return nil
+		if (c.config.Provider == "hub" || c.config.Provider == "custom" || c.config.Provider == "gigachat" || c.config.Provider == "openai") && u.Scheme == "https" && u.Host == "hub.gigaschool.ru" {
+			if c.config.APIKey == "" {
+				return errors.New("LLM_API_KEY is required")
+			}
+			return nil
+		}
 	}
-	return errors.New("NLU requires loopback or explicitly enabled official Gemini HTTPS endpoint")
+	return errors.New("NLU requires loopback or explicitly enabled remote endpoint")
 }
 
 // IsLocal identifies loopback adapters. Remote Gemini requires separate explicit opt-in.
@@ -219,6 +231,8 @@ func (c *UniversalLLMClient) Chat(ctx context.Context, messages []ChatMessage, j
 	} else if c.config.Provider == "ollama" {
 		// NLU needs a short classification, not a reasoning trace consuming its budget.
 		reqBody.ReasoningEffort = "none"
+	} else if strings.Contains(strings.ToLower(c.config.Model), "gpt-oss") {
+		reqBody.ReasoningEffort = "low"
 	}
 	if jsonMode {
 		reqBody.ResponseFormat = &RespFormat{Type: "json_schema", JSONSchema: &ResponseSchema{Name: "clinic_nlu", Strict: true, Schema: nluSchema()}}

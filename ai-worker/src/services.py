@@ -69,9 +69,11 @@ class Services:
 
 
 def load_services(requested_device: str, settings: Any = None) -> Services:
+    import os
+
     import torch
 
-    from src.asr_service import FasterWhisperASR
+    from src.asr_service import FasterWhisperASR, RemoteWhisperASR
     from src.decision import create_decision_engine
     from src.tts_service import SileroTTSService
     from src.vad_service import SileroVADService
@@ -91,8 +93,22 @@ def load_services(requested_device: str, settings: Any = None) -> Services:
     except Exception:
         pass
 
+    asr_provider = os.getenv("ASR_PROVIDER", "local").lower()
+    if asr_provider in ("api", "remote") or (
+        os.getenv("ASR_API_URL") and (os.getenv("ASR_API_KEY") or os.getenv("LLM_API_KEY"))
+    ):
+        fallback = None
+        if os.getenv("ASR_LOCAL_FALLBACK", "false") == "true":
+            try:
+                fallback = FasterWhisperASR(device=device)
+            except Exception:
+                pass
+        asr = RemoteWhisperASR(fallback=fallback)
+    else:
+        asr = FasterWhisperASR(device=device)
+
     return Services(
-        asr=FasterWhisperASR(device=device),
+        asr=asr,
         tts=tts,
         vad=SileroVADService(),
         decision=decision_engine,
