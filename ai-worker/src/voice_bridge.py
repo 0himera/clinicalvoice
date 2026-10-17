@@ -119,6 +119,9 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
             logger.warning("Decision engine failed (%s): %s", type(exc).__name__, exc)
             raise HTTPException(500, f"decision engine error: {exc}") from None
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+        logger.info(
+            "Decision request evaluated in %.1f ms (%d questions)", elapsed_ms, len(req.questions)
+        )
         return {"model": "THX-01", "answers": answers, "latency_ms": elapsed_ms}
 
     return app

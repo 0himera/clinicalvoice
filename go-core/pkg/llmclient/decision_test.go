@@ -79,7 +79,11 @@ func TestDecisionClient_ConfirmationAndAside(t *testing.T) {
 				"confirmation": {
 					Type:       TypeChoice,
 					Choice:     "AFFIRM",
-					Confidence: 0.96,
+					Confidence: 0.49, // entropy/margin in THX-01
+					Probabilities: map[string]float64{
+						"AFFIRM": 0.96,
+						"DENY":   0.04,
+					},
 				},
 				"aside_intent": {
 					Type:   TypeChoice,
@@ -109,7 +113,11 @@ func TestDecisionClient_SlotChoice(t *testing.T) {
 				"slot_choice": {
 					Type:       TypeChoice,
 					Choice:     "OPTION_2",
-					Confidence: 0.93,
+					Confidence: 0.45, // entropy/margin in THX-01
+					Probabilities: map[string]float64{
+						"OPTION_1": 0.05,
+						"OPTION_2": 0.93,
+					},
 				},
 			},
 		}
@@ -184,14 +192,26 @@ func TestDecisionClient_AuthorizationHeader(t *testing.T) {
 }
 
 func TestDecisionClient_Timeout(t *testing.T) {
+	// Verify default timeout is 1500ms
+	defaultClient := NewDecisionClient("", "", true)
+	if defaultClient.httpClient.Timeout != 1500*time.Millisecond {
+		t.Fatalf("expected default timeout 1500ms, got %v", defaultClient.httpClient.Timeout)
+	}
+
+	// Verify DECISION_TIMEOUT_MS env var
+	t.Setenv("DECISION_TIMEOUT_MS", "50")
+	envClient := NewDecisionClient("", "", true)
+	if envClient.httpClient.Timeout != 50*time.Millisecond {
+		t.Fatalf("expected env timeout 50ms, got %v", envClient.httpClient.Timeout)
+	}
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
 	client := NewDecisionClient(server.URL, "", true)
-	// Timeout is 250ms, server sleeps 300ms
 	_, err := client.Decide(context.Background(), "state", map[string]QuestionSpec{})
 	if err == nil {
 		t.Fatalf("expected timeout error")

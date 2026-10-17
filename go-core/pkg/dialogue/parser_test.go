@@ -8,12 +8,11 @@ func TestConfirmationAffirmations(t *testing.T) {
 	affirms := []string{
 		"Конечно",
 		"Да, можно",
-		"Можно",
 		"Смогу",
 		"Буду",
 		"Мне удобно",
+		"Меня устраивает",
 		"Мне подходит",
-		"Мне подходит первый вариант.",
 		"Мне эта запись подходит",
 		"Мне тот вариант подходит",
 		"Ну мне подходит",
@@ -21,7 +20,6 @@ func TestConfirmationAffirmations(t *testing.T) {
 		"Давайте",
 		"Хорошо, спасибо",
 		"Так точно",
-		"Слушаю",
 		"У аппарата",
 		"Это я",
 	}
@@ -82,11 +80,19 @@ func TestPostpositionalNegationInParseIntent(t *testing.T) {
 
 func TestConfirmationAlternativesAreUnknown(t *testing.T) {
 	alternatives := []string{
+		"Подходит первое время",
+		"Мне подходит первое время",
+		"Мне первый вариант",
+		"Мне подходит первый вариант.",
 		"Подходит второе время",
 		"Мне подходит второе время",
 		"Мне второй вариант",
 		"Давайте в другой день",
 		"Лучше другое время",
+		"Можно",
+		"Слушаю",
+		"Удобно",
+		"Устраивает",
 	}
 	for _, text := range alternatives {
 		if got := Confirmation(text); got != IntentUnknown {

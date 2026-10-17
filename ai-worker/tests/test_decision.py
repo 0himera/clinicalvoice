@@ -125,3 +125,167 @@ async def test_decision_http_endpoint():
         assert "answers" in data
         assert data["answers"]["confirm"]["choice"] == "AFFIRM"
         assert "latency_ms" in data
+
+
+def test_fake_decision_engine_english_prompts():
+    engine = FakeDecisionEngine(device="cpu")
+
+    # Confirmation and aside intent (English schema from commit aa7f343)
+    state = {
+        "dialogue_step": "confirm_booking",
+        "last_prompt": "Вы записаны к терапевту Богдановой на завтра в 10:00. Подтверждаете запись?",
+        "held_slot": "терапевт Богданова, 10:00",
+        "patient_utterance": "Да, подтверждаю, а какой этаж и номер кабинета?",
+    }
+    questions = {
+        "confirmation": {
+            "type": "choice",
+            "question": "Does the patient confirm the proposed appointment slot?",
+            "criteria": {
+                "AFFIRM": "Yes, patient agrees and confirms appointment",
+                "DENY": "No, patient rejects appointment or cancels",
+                "CHANGE_SLOT": "Patient asks for another date, day or time",
+                "UNCERTAIN": "Patient is hesitant, unsure or asks questions without confirming",
+            },
+        },
+        "aside_intent": {
+            "type": "choice",
+            "question": "Did the patient ask an additional FAQ or informational question?",
+            "criteria": {
+                "NONE": "No additional question",
+                "FAQ_LOCATION": "Question about cabinet, room number, floor, or clinic address",
+                "FAQ_ANALYSIS": "Question about blood tests, preparation or fluorography",
+                "FAQ_DOCUMENTS": "Question about required documents (passport, insurance policy)",
+                "FAQ_PRICE": "Question about prices, costs or paid services",
+            },
+        },
+    }
+    answers = engine.decide(state, questions)
+    assert answers["confirmation"]["choice"] == "AFFIRM"
+    assert answers["confirmation"]["confidence"] >= 0.80
+    assert answers["aside_intent"]["choice"] == "FAQ_LOCATION"
+    assert answers["aside_intent"]["confidence"] >= 0.80
+
+    # Slot choice
+    slot_state = {
+        "dialogue_step": "choose_slot",
+        "option_1": "10:00",
+        "option_2": "15:30",
+        "patient_preference": "давайте тот что попозже, второй вариант",
+    }
+    slot_questions = {
+        "slot_choice": {
+            "type": "choice",
+            "question": "Which of the two offered appointment slots does the patient want?",
+            "criteria": {
+                "OPTION_1": "Option 1: 10:00",
+                "OPTION_2": "Option 2: 15:30",
+                "DECLINE_BOTH": "Patient declines both offered options or asks for a different time",
+                "UNCERTAIN": "Unclear or unrelated response",
+            },
+        }
+    }
+    slot_ans = engine.decide(slot_state, slot_questions)
+    assert slot_ans["slot_choice"]["choice"] == "OPTION_2"
+
+    # Doctor excerpt with English question
+    doc_state = {
+        "dialogue_step": "find_doctor",
+        "patient_utterance": "запишите к терапевту Богдановой пожалуйста",
+    }
+    doc_questions = {
+        "doctor_name": {
+            "type": "excerpt",
+            "question": "Surname of the doctor the patient wants to visit",
+        }
+    }
+    doc_ans = engine.decide(doc_state, doc_questions)
+    assert doc_ans["doctor_name"]["text"] == "Богдановой"
+    assert doc_ans["doctor_name"]["start"] == 21
+    assert doc_ans["doctor_name"]["end"] == 31
+
+    # Vital threat with English question
+    threat_questions = {
+        "vital_threat": {
+            "type": "noul",
+            "question": "Is the patient reporting an acute, real physical heart attack, severe vital choking or medical emergency right now, excluding negations and emotional metaphors?",
+        }
+    }
+    ans_real = engine.decide(
+        "Мне очень плохо, сильная боль в груди и задыхается",
+        threat_questions,
+    )
+    assert ans_real["vital_threat"]["noul"] > 0.90
+
+    ans_neg = engine.decide(
+        "У меня температура 37.5, но я не задыхаюсь и боли в груди нет",
+        threat_questions,
+    )
+    assert ans_neg["vital_threat"]["noul"] < 0.15
+
+    # Choice keywords verification (English & Russian matching)
+    keywords_test = [
+        ("I need to book an appointment with a doctor", "BOOKING"),
+        ("Please cancel my appointment", "CANCEL"),
+        ("I want to reschedule to another date", "RESCHEDULE"),
+        ("Where is the clinic address and what floor?", "FAQ_LOCATION"),
+        ("Do I need prep for a blood test?", "FAQ_ANALYSIS"),
+        ("What is the price and cost of services?", "FAQ_PRICE"),
+        ("Yes, affirm that", "AFFIRM"),
+        ("No, deny that", "DENY"),
+        ("Option 1 please, the first one", "OPTION_1"),
+        ("Option 2 please, the second one", "OPTION_2"),
+    ]
+    all_criteria = {
+        "BOOKING": "Booking an appointment with a doctor",
+        "CANCEL": "Cancelling an existing appointment",
+        "RESCHEDULE": "Rescheduling an existing appointment to another date",
+        "FAQ_LOCATION": "Question about clinic address, location or floor",
+        "FAQ_ANALYSIS": "Question about blood test, laboratory or prep",
+        "FAQ_PRICE": "Question about price or cost",
+        "AFFIRM": "Yes, affirm or confirm",
+        "DENY": "No, deny or cancel",
+        "OPTION_1": "Option 1, first option",
+        "OPTION_2": "Option 2, second option",
+        "NONE": "No match",
+    }
+    for phrase, expected in keywords_test:
+        res = engine.decide(phrase, {"q": {"type": "choice", "criteria": all_criteria}})
+        assert res["q"]["choice"] == expected, (
+            f"Failed for phrase '{phrase}': got {res['q']['choice']}"
+        )
+
+
+def test_disabled_decision_engine():
+    from src.decision import DisabledDecisionEngine
+
+    engine = DisabledDecisionEngine("Test disabled reason")
+    engine.warmup()
+
+    with pytest.raises(RuntimeError, match="Decision engine unavailable"):
+        engine.decide("state", {"q": {"type": "choice"}})
+
+
+def test_create_decision_engine_factory():
+    from src.decision import DisabledDecisionEngine, create_decision_engine
+
+    # Mock mode enabled
+    mock_settings = Settings(decision_mock=True, decision_enabled=True)
+    engine = create_decision_engine(mock_settings)
+    assert isinstance(engine, FakeDecisionEngine)
+
+    # Mock mode disabled, model unavailable -> returns DisabledDecisionEngine (never silent FakeDecisionEngine)
+    real_settings = Settings(
+        decision_mock=False,
+        decision_enabled=True,
+        decision_model_path="non_existent/model_thx01",
+    )
+    engine_real = create_decision_engine(real_settings)
+    assert isinstance(engine_real, DisabledDecisionEngine)
+    with pytest.raises(RuntimeError, match="Decision engine unavailable"):
+        engine_real.decide("test", {})
+
+    # Disabled mode
+    disabled_settings = Settings(decision_mock=False, decision_enabled=False)
+    engine_disabled = create_decision_engine(disabled_settings)
+    assert isinstance(engine_disabled, DisabledDecisionEngine)

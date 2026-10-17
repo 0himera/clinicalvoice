@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 	"time"
 )
 
@@ -61,17 +63,23 @@ type DecisionClient struct {
 	httpClient *http.Client
 }
 
-// NewDecisionClient initializes the DecisionClient with a strict timeout (250ms).
+// NewDecisionClient initializes the DecisionClient.
 func NewDecisionClient(endpoint, apiToken string, enabled bool) *DecisionClient {
 	if endpoint == "" {
 		endpoint = "http://127.0.0.1:8000/v1/decide"
+	}
+	timeout := 1500 * time.Millisecond
+	if raw := os.Getenv("DECISION_TIMEOUT_MS"); raw != "" {
+		if ms, err := strconv.Atoi(raw); err == nil && ms > 0 {
+			timeout = time.Duration(ms) * time.Millisecond
+		}
 	}
 	return &DecisionClient{
 		endpoint: endpoint,
 		apiToken: apiToken,
 		enabled:  enabled,
 		httpClient: &http.Client{
-			Timeout: 250 * time.Millisecond,
+			Timeout: timeout,
 		},
 	}
 }
@@ -148,6 +156,23 @@ func (c *DecisionClient) DecideVitalThreat(ctx context.Context, utterance string
 		return true, 1.0, nil
 	}
 	pTrue = ans.Noul
+	prob := ans.Confidence
+	if ans.Probabilities != nil && ans.Choice != "" {
+		if p, ok := ans.Probabilities[ans.Choice]; ok {
+			prob = p
+		}
+	}
+	if ans.Noul == 0 {
+		if ans.Choice == "true" || ans.Choice == "TRUE" || ans.Choice == "THREAT" || ans.Choice == "EMERGENCY" {
+			pTrue = prob
+		} else if ans.Choice == "false" || ans.Choice == "FALSE" || ans.Choice == "NOT_THREAT" || ans.Choice == "METAPHOR" || ans.Choice == "NONE" {
+			pTrue = 1.0 - prob
+		} else if p, ok := ans.Probabilities["true"]; ok {
+			pTrue = p
+		} else if p, ok := ans.Probabilities["TRUE"]; ok {
+			pTrue = p
+		}
+	}
 	// Calibrated threshold: if P(true) < 0.15, it is a proven false alarm / metaphor
 	if pTrue < 0.15 {
 		return false, pTrue, nil
@@ -197,7 +222,13 @@ func (c *DecisionClient) DecideConfirmationAndAside(ctx context.Context, utteran
 	}
 	confAns := resp.Answers["confirmation"]
 	asideAns := resp.Answers["aside_intent"]
-	return confAns.Choice, asideAns.Choice, confAns.Confidence, nil
+	confProb := confAns.Confidence
+	if confAns.Probabilities != nil && confAns.Choice != "" {
+		if p, ok := confAns.Probabilities[confAns.Choice]; ok {
+			confProb = p
+		}
+	}
+	return confAns.Choice, asideAns.Choice, confProb, nil
 }
 
 // DecideSlotChoice resolves semantic preference when two options are presented
@@ -230,13 +261,19 @@ func (c *DecisionClient) DecideSlotChoice(ctx context.Context, utterance, opt1De
 		return -1, 0, err
 	}
 	ans := resp.Answers["slot_choice"]
+	prob := ans.Confidence
+	if ans.Probabilities != nil && ans.Choice != "" {
+		if p, ok := ans.Probabilities[ans.Choice]; ok {
+			prob = p
+		}
+	}
 	switch ans.Choice {
 	case "OPTION_1":
-		return 0, ans.Confidence, nil
+		return 0, prob, nil
 	case "OPTION_2":
-		return 1, ans.Confidence, nil
+		return 1, prob, nil
 	default:
-		return -1, ans.Confidence, nil
+		return -1, prob, nil
 	}
 }
 

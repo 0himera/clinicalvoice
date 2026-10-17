@@ -40,16 +40,31 @@ func TestDecisionModel_CompositeConfirmationAndAside(t *testing.T) {
 		t.Fatalf("expected StateConfirmBooking, got %s", r.call.CurrentState)
 	}
 
-	// Composite user utterance: confirmation + aside question
+	// Composite user utterance: confirmation + aside question.
+	// Model answers aside and explicitly prompts for confirmation without booking yet.
 	res := r.turn("Да, подтверждаю, а где кабинет находится?")
-	if res.NextState != StateFinal && res.NextState != StateReminderConsent {
-		t.Fatalf("expected booking success, got next state %s", res.NextState)
+	if res.NextState != StateConfirmBooking {
+		t.Fatalf("expected StateConfirmBooking, got next state %s", res.NextState)
 	}
 	if !strings.Contains(res.BotSpeech, "Кабинет находится на втором этаже") {
 		t.Errorf("expected aside speech in bot response, got %s", res.BotSpeech)
 	}
-	if !strings.Contains(res.BotSpeech, "Готово, вы записаны") {
-		t.Errorf("expected booking confirmation speech, got %s", res.BotSpeech)
+	if !strings.Contains(res.BotSpeech, "Подтверждаете выбранное время? Скажите да или нет.") {
+		t.Errorf("expected explicit confirmation question in bot response, got %s", res.BotSpeech)
+	}
+
+	// Invariant: booking must NOT be confirmed before explicit user confirmation
+	if len(r.visits(t)) != 0 {
+		t.Fatalf("expected 0 confirmed visits before explicit consent, got %d", len(r.visits(t)))
+	}
+
+	// User explicitly confirms in the next turn
+	res2 := r.turn("Да")
+	if res2.NextState != StateFinal && res2.NextState != StateReminderConsent {
+		t.Fatalf("expected booking success after explicit confirmation, got next state %s", res2.NextState)
+	}
+	if !strings.Contains(res2.BotSpeech, "Готово, вы записаны") {
+		t.Errorf("expected booking confirmation speech, got %s", res2.BotSpeech)
 	}
 
 	visits := r.visits(t)

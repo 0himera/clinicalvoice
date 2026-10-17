@@ -7,6 +7,7 @@
   <img src="https://img.shields.io/badge/FastAGI%20%2F%20AudioSocket-8_kHz-blue" alt="AudioSocket">
   <img src="https://img.shields.io/badge/ASR-Faster--Whisper-green" alt="Faster-Whisper">
   <img src="https://img.shields.io/badge/TTS-Silero_v4-blueviolet" alt="Silero">
+  <img src="https://img.shields.io/badge/Decision_Model-THX--01_(mmBERT)-purple" alt="THX-01">
   <img src="https://img.shields.io/badge/Fallback_NLU-Ollama_%2F_Gemini-orange" alt="LLM">
   <img src="https://img.shields.io/badge/Security-AES--256--GCM-red" alt="Security">
 </p>
@@ -21,7 +22,8 @@
 
 * **Надёжное управление диалогом:** единственный владелец состояния и мутаций — контроллер Go FSM. Пациентская речь считается недоверенным вводом; ни ASR-текст, ни сырой ответ LLM не могут напрямую изменить статус визита.
 * **Строгое подтверждение операций:** бронирование, отмена и перенос требуют обязательного явного подтверждения («Да», «Подтверждаю», «Мне подходит»). Перенос обновляет существующий `visit_id` через `PATCH`, не создавая дублирующих талонов.
-* **100% медицинская безопасность (Fast-Gate):** экстренные маркеры (боли в груди, удушье, инсульт) мгновенно перехватываются за `< 1 мс`. Пациент слышит директиву вызвать **103/112**, а канал через Asterisk AMI Redirect переключается на экстренную линию **104**.
+* **Неавторегрессионная Decision-модель (doofz/THX-01):** локальный System-1 классификатор на базе mmBERT в `ai-worker` для быстрой типизированной оценки без генерации токенов (Zero Output Tokens). Обрабатывает композитные реплики (согласие + попутный вопрос: *«Да, а где кабинет?»*), нормализует выбор слотов и отсекает ложные тревоги соматических метафор. Модель не авторизует мутации напрямую — контроллер FSM сохраняет строгий детерминированный контроль.
+* **Детерминированная медицинская безопасность (Fast-Gate):** экстренные маркеры (боли в груди, удушье, инсульт) мгновенно перехватываются за `< 1 мс`. Пациент слышит директиву вызвать **103/112**, а канал через Asterisk AMI Redirect переключается на экстренную линию **104**.
 * **Соблюдение регламента (R-04):** ассистент не выдумывает диагнозов и не консультирует по лечению. При вопросах о симптомах бот вежливо разъясняет границы компетенции и переводит звонок врачу или оператору.
 * **Телефонный аудиотракт (G.711 / 8 кГц):** приём и отдача звука пакетами PCM16 8 кГц по 20 мс через Asterisk AudioSocket и FastAGI. Потоковый Silero VAD со сбросом рекуррентного контекста после 640 мс тишины и мгновенный Barge-in (сброс воспроизведения при перебивании).
 * **Кампания исходящих напоминаний (С-10):** автоматический обзвон накануне приёма строго в разрешённые интервалы (будни 10:00–19:00, сб 10:00–15:00 GMT+4) с проверкой получателя и фиксацией статуса в комментарии МИС.
@@ -60,7 +62,7 @@ flowchart TD
         AMI["Asterisk AMI\n(Редирект на 104)"]
         DB[("SQLite WAL\n(контакты, outbox)")]
         MIS["МИС Клиники\n(REST API GMT+4)"]
-        Decision["Decision Model\n(THX-01 CPU 37мс)"]
+        Decision["Decision Model\n(THX-01 mmBERT)"]
         LLM["Fallback NLU\n(Ollama / Gemini)"]
     end
 
@@ -287,17 +289,25 @@ make voice
 | :--- | :---: | :--- |
 | **`PORT`** | `8080` | Порт HTTP API сервера Go Core |
 | **`CORE_URL`** | `http://127.0.0.1:8080` | URL Go Core для AI Worker |
+| **`CORE_API_TOKEN`** | — | Токен авторизации HTTP API Go Core |
 | **`DATABASE_PATH`** | `var/tochka.db` | Путь к файлу SQLite базы данных (WAL) |
 | **`SCHEDULE_PATH`** | `data/` | Путь к Excel-файлу организаторов с расписанием врачей |
 | **`MIS_API_TOKEN`** | — | Токен доступа к HTTPS API стенда МИС (пусто = локальный mock) |
-| **`MIS_BASE_URL`** | `https://crm-med-mock.dbi-testing.ru` | Базовый адрес стенда МИС |
+| **`MIS_API_URL`** | `https://crm-med-mock.dbi-testing.ru/api/v1` | Базовый адрес стенда МИС |
+| **`DECISION_MODEL_ENABLED`** | `true` | Включение локальной System-1 Decision-модели (THX-01) |
+| **`DECISION_MODEL_URL`** | `http://127.0.0.1:8000/v1/decide` | URL эндпоинта решений на AI Worker (строго loopback) |
+| **`DECISION_DEVICE`** | `cpu` | Устройство инференса для Decision-модели (`cpu`, `cuda`, `auto`) |
+| **`DECISION_MODEL_PATH`** | `doofz/THX-01` | Идентификатор или локальный путь к весам THX-01 |
+| **`DECISION_MOCK`** | `false` | Режим семантического мока без загрузки нейросетевых весов |
+| **`AI_WORKER_URL`** | `http://127.0.0.1:8000` | URL речевого транспорта для Go Core |
+| **`AI_API_TOKEN`** | — | Bearer-токен для защиты эндпоинтов AI Worker (/asr, /tts, /v1/decide) |
 | **`LLM_PROVIDER`** | `none` | Провайдер Fallback NLU (`none`, `ollama`, `gemini`) |
 | **`LLM_MODEL`** | `gemma4:e4b` | Модель для NLU (`gemma4:e4b` / `gemini-3.5-flash-lite`) |
 | **`LLM_ALLOW_REMOTE`** | `false` | Разрешение обращений к внешнему Gemini API |
 | **`LLM_API_KEY`** | — | Ключ Google Gemini / OpenAI |
-| **`DEVICE`** | `auto` | Устройство для нейросетей (`auto`, `cuda`, `cpu`) |
+| **`DEVICE`** | `auto` | Устройство для нейросетей ASR/TTS (`auto`, `cuda`, `cpu`) |
 | **`TTS_SPEAKER`** | `kseniya` | Голос синтеза речи в Silero TTS (`kseniya`, `baya`) |
-| **`ASTERISK_AMI_PORT`** | `5038` | Порт подключения к Asterisk AMI |
+| **`ASTERISK_AMI_ADDRESS`** | `127.0.0.1:5038` | Адрес подключения к Asterisk AMI |
 | **`TRANSCRIPT_LOGGING`** | `false` | Включение защищённого сохранения стенограмм |
 | **`TRANSCRIPT_RETENTION_HOURS`** | `24` | Срок хранения зашифрованных стенограмм (1–24 ч) |
 

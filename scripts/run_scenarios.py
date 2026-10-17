@@ -18,8 +18,10 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from client import VoiceClient
+from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT / ".env", override=False)
 
 
 @contextmanager
@@ -44,8 +46,14 @@ def isolated_server(port: int = 18080):
             "LLM_ALLOW_REMOTE": "false",
             "LLM_TIMEOUT_SEC": "12",
             "LLM_MAX_TOKENS": "256",
+            "AI_API_TOKEN": os.getenv("AI_API_TOKEN", ""),
+            "DECISION_MODEL_URL": os.getenv(
+                "DECISION_MODEL_URL", "http://127.0.0.1:8000/v1/decide"
+            ),
+            "DECISION_MODEL_ENABLED": os.getenv("DECISION_MODEL_ENABLED", "true"),
         }
     )
+    (ROOT / "var").mkdir(parents=True, exist_ok=True)
     log_path = ROOT / "var" / f"isolated-server-{port}.log"
     with log_path.open("w") as log:
         os.chmod(log_path, 0o600)

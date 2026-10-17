@@ -89,6 +89,17 @@ class THX01Engine:
         self._executor.shutdown(wait=False)
 
 
+def _has_word(text: str, word: str) -> bool:
+    """Check if whole word exists in text for short tokens, or substring for stems/phrases."""
+    if len(word) <= 3:
+        return bool(re.search(rf"(?<!\w){re.escape(word)}(?!\w)", text, re.IGNORECASE))
+    return word in text
+
+
+def _any_word(text: str, words: tuple[str, ...]) -> bool:
+    return any(_has_word(text, w) for w in words)
+
+
 class FakeDecisionEngine:
     """Fast, deterministic semantic decision engine for CI and unit tests without GPU or downloads."""
 
@@ -100,12 +111,26 @@ class FakeDecisionEngine:
 
     def decide(self, state: Any, questions: dict[str, Any]) -> dict[str, Any]:
         doc = ""
+        user_text = ""
         if isinstance(state, str):
             doc = state
+            user_text = state
         elif isinstance(state, dict):
             doc = " ".join(str(v) for v in state.values())
+            for u_key in (
+                "patient_utterance",
+                "patient_preference",
+                "реплика_пациента",
+                "ответ_пациента",
+            ):
+                if u_key in state and isinstance(state[u_key], str):
+                    user_text = state[u_key]
+                    break
+            if not user_text:
+                user_text = doc
 
-        doc_lower = doc.lower()
+        target_text = user_text if user_text else doc
+        t_lower = target_text.lower()
         answers: dict[str, Any] = {}
 
         for qid, q in questions.items():
@@ -121,51 +146,502 @@ class FakeDecisionEngine:
                     desc_lower = str(opt_desc).lower()
                     key_lower = opt_key.lower()
 
+                    # Neutral default options
+                    if opt_key in ("NONE", "none", "UNCERTAIN", "UNKNOWN"):
+                        opt_score = 0.20
+
                     # Semantic matching heuristics for mock
-                    if key_lower in doc_lower:
+                    if _has_word(t_lower, key_lower):
                         opt_score += 1.0
 
                     words = re.findall(r"[\w]+", desc_lower)
                     for w in words:
-                        if len(w) >= 4 and w[:4] in doc_lower:
+                        if len(w) >= 4 and w[:4] in t_lower:
                             opt_score += 0.35
 
-                    # Specialized intent heuristics
-                    if key_lower == "vital_threat" or opt_key == "EMERGENCY":
+                    # Specialized intent heuristics supporting Russian and English
+                    if (
+                        key_lower == "vital_threat"
+                        or opt_key == "EMERGENCY"
+                        or any(
+                            k in desc_lower
+                            for k in ("emergency", "vital threat", "acute threat", "угроз")
+                        )
+                    ):
                         if any(
-                            k in doc_lower
-                            for k in ("боль в груди", "удушье", "инсульт", "не дышит")
+                            k in t_lower
+                            for k in (
+                                "боль в груди",
+                                "болит в груди",
+                                "давит в груди",
+                                "удушье",
+                                "инсульт",
+                                "не дышит",
+                                "chest pain",
+                                "heart attack",
+                                "choking",
+                            )
                         ):
                             if not any(
-                                neg in doc_lower for neg in ("не задыха", "нет боли", "не болит")
+                                neg in t_lower
+                                for neg in (
+                                    "не задыха",
+                                    "нет боли",
+                                    "не болит",
+                                    "кровью обливается",
+                                    "not choking",
+                                    "no chest pain",
+                                )
                             ):
                                 opt_score += 2.0
-                    elif key_lower == "affirm" or opt_key == "AFFIRM":
-                        if any(
-                            w in doc_lower
-                            for w in (
+
+                    elif (
+                        key_lower in ("affirm", "yes")
+                        or opt_key == "AFFIRM"
+                        or any(
+                            k in desc_lower
+                            for k in (
+                                "affirm",
+                                "yes",
+                                "agrees",
+                                "confirms",
+                                "согласие",
+                                "подтвердить",
+                            )
+                        )
+                    ):
+                        if _any_word(
+                            t_lower,
+                            (
                                 "да",
                                 "подходит",
                                 "согласен",
+                                "согласна",
                                 "подтверждаю",
                                 "конечно",
                                 "удобно",
+                                "хорошо",
+                                "буду",
+                                "запишите",
+                                "давайте",
+                                "yes",
+                                "sure",
+                                "confirm",
+                                "fine",
+                                "ok",
+                                "okay",
+                                "agreed",
+                                "suits",
+                            ),
+                        ):
+                            if not _any_word(
+                                t_lower,
+                                (
+                                    "не подходит",
+                                    "не надо",
+                                    "нет",
+                                    "не могу",
+                                    "не получится",
+                                    "no",
+                                    "deny",
+                                    "cancel",
+                                    "not",
+                                ),
+                            ):
+                                opt_score += 2.0
+
+                    elif (
+                        key_lower in ("deny", "no")
+                        or opt_key == "DENY"
+                        or (
+                            any(k in desc_lower for k in ("deny", "reject", "cancels", "отказ"))
+                            and "reschedule" not in desc_lower
+                            and "change" not in desc_lower
+                        )
+                    ):
+                        deny_words = [
+                            "нет",
+                            "не подходит",
+                            "не надо",
+                            "не могу",
+                            "не получится",
+                            "отказываюсь",
+                            "no",
+                            "deny",
+                            "reject",
+                            "neither",
+                        ]
+                        if "CANCEL" not in criteria and "cancel" not in criteria:
+                            deny_words.extend(["отмена", "отмените", "cancel"])
+                        if _any_word(t_lower, tuple(deny_words)):
+                            opt_score += 2.0
+
+                    elif (
+                        key_lower in ("change_slot", "reschedule")
+                        or opt_key in ("CHANGE_SLOT", "RESCHEDULE")
+                        or any(
+                            k in desc_lower
+                            for k in (
+                                "reschedule",
+                                "another date",
+                                "different time",
+                                "change slot",
+                                "другой день",
+                                "другое время",
+                                "перенести",
+                            )
+                        )
+                    ):
+                        if any(
+                            w in t_lower
+                            for w in (
+                                "другой",
+                                "другое",
+                                "позже",
+                                "попозже",
+                                "раньше",
+                                "пораньше",
+                                "перенести",
+                                "перенесите",
+                                "перенос",
+                                "reschedule",
+                                "another",
+                                "later",
+                                "earlier",
+                                "different time",
                             )
                         ):
-                            if not any(w in doc_lower for w in ("не подходит", "не надо", "нет")):
-                                opt_score += 2.0
-                    elif key_lower == "deny" or opt_key == "DENY":
+                            opt_score += 1.5
+
+                    elif opt_key in ("OPTION_1", "FIRST") or any(
+                        k in desc_lower for k in ("option 1", "first option", "первый вариант")
+                    ):
+                        if _any_word(
+                            t_lower,
+                            (
+                                "первый",
+                                "первое",
+                                "первую",
+                                "вариант 1",
+                                "раньше",
+                                "пораньше",
+                                "утром",
+                                "first",
+                                "option 1",
+                                "1",
+                                "one",
+                            ),
+                        ) and not _any_word(t_lower, ("не первый", "не вариант 1")):
+                            opt_score += 2.0
+
+                    elif opt_key in ("OPTION_2", "SECOND") or any(
+                        k in desc_lower for k in ("option 2", "second option", "второй вариант")
+                    ):
+                        if _any_word(
+                            t_lower,
+                            (
+                                "второй",
+                                "второе",
+                                "вторую",
+                                "вариант 2",
+                                "позже",
+                                "попозже",
+                                "вечером",
+                                "после обеда",
+                                "second",
+                                "option 2",
+                                "2",
+                                "two",
+                            ),
+                        ) and not _any_word(t_lower, ("не второй", "не вариант 2")):
+                            opt_score += 2.0
+
+                    elif opt_key == "DECLINE_BOTH" or any(
+                        k in desc_lower for k in ("decline both", "declines both", "отказ от обоих")
+                    ):
                         if any(
-                            w in doc_lower
-                            for w in ("нет", "не подходит", "не надо", "не могу", "не получится")
+                            w in t_lower
+                            for w in (
+                                "ни один",
+                                "ни тот ни другой",
+                                "оба не",
+                                "не подходит ни",
+                                "neither",
+                                "none of them",
+                                "both are bad",
+                            )
                         ):
                             opt_score += 2.0
-                    elif key_lower == "change_slot" or opt_key == "CHANGE_SLOT":
+
+                    elif opt_key == "BOOKING" or any(
+                        k in desc_lower for k in ("book", "appointment", "booking", "запис")
+                    ):
                         if any(
-                            w in doc_lower
-                            for w in ("другой", "позже", "раньше", "второй", "перенести")
+                            w in t_lower
+                            for w in (
+                                "запис",
+                                "записать",
+                                "запишите",
+                                "талон",
+                                "к врачу",
+                                "прием",
+                                "приём",
+                                "попасть к",
+                                "book",
+                                "appointment",
+                            )
                         ):
-                            opt_score += 1.5
+                            if not any(
+                                neg in t_lower
+                                for neg in ("отмен", "перенес", "cancel", "reschedule")
+                            ):
+                                opt_score += 2.0
+
+                    elif opt_key == "CANCEL" or (
+                        any(k in desc_lower for k in ("cancel", "cancelling", "отмен"))
+                        and "book" not in desc_lower
+                        and "reschedule" not in desc_lower
+                    ):
+                        if any(
+                            w in t_lower
+                            for w in (
+                                "отмен",
+                                "отмените",
+                                "отменить",
+                                "снять запись",
+                                "аннулир",
+                                "не приду",
+                                "cancel",
+                            )
+                        ):
+                            opt_score += 2.0
+
+                    elif opt_key == "CHECK_STATUS" or any(
+                        k in desc_lower for k in ("check_status", "checking details", "провер")
+                    ):
+                        if any(
+                            w in t_lower
+                            for w in (
+                                "провер",
+                                "когда у меня",
+                                "во сколько",
+                                "напомн",
+                                "статус",
+                                "check",
+                                "when is",
+                            )
+                        ):
+                            opt_score += 2.0
+
+                    elif opt_key == "HOME_VISIT" or any(
+                        k in desc_lower for k in ("home visit", "на дом")
+                    ):
+                        if any(
+                            w in t_lower
+                            for w in ("на дом", "вызов врача", "вызвать на дом", "home visit")
+                        ):
+                            opt_score += 2.0
+
+                    elif opt_key == "OPERATOR" or any(
+                        k in desc_lower
+                        for k in ("operator", "registrar", "human", "оператор", "регистратор")
+                    ):
+                        if any(
+                            w in t_lower
+                            for w in (
+                                "оператор",
+                                "человек",
+                                "соедините",
+                                "живой",
+                                "специалист",
+                                "переведи",
+                                "operator",
+                                "human",
+                            )
+                        ):
+                            opt_score += 2.0
+
+                    elif opt_key == "DIRECTORY_INFO" or any(
+                        k in desc_lower
+                        for k in (
+                            "directory of doctors",
+                            "directory",
+                            "specialties",
+                            "список врачей",
+                        )
+                    ):
+                        if any(
+                            w in t_lower
+                            for w in (
+                                "какие врачи",
+                                "список врачей",
+                                "какие специалисты",
+                                "расписание врачей",
+                                "directory",
+                                "list of doctors",
+                            )
+                        ):
+                            opt_score += 2.0
+
+                    elif opt_key in ("FAQ_LOCATION", "address") or any(
+                        k in desc_lower
+                        for k in (
+                            "location",
+                            "floor",
+                            "address",
+                            "cabinet",
+                            "room number",
+                            "адрес",
+                            "этаж",
+                            "кабинет",
+                            "добраться",
+                        )
+                    ):
+                        if any(
+                            w in t_lower
+                            for w in (
+                                "где наход",
+                                "какой этаж",
+                                "какой кабинет",
+                                "где вы",
+                                "как доехать",
+                                "как добраться",
+                                "адрес",
+                                "кабинет",
+                                "этаж",
+                                "корпус",
+                                "location",
+                                "floor",
+                                "address",
+                                "where",
+                                "room",
+                            )
+                        ):
+                            opt_score += 2.0
+
+                    elif opt_key in ("FAQ_ANALYSIS", "blood_test") or any(
+                        k in desc_lower
+                        for k in (
+                            "blood",
+                            "test",
+                            "prep",
+                            "analysis",
+                            "laboratory",
+                            "анализ",
+                            "кров",
+                        )
+                    ):
+                        if any(
+                            w in t_lower
+                            for w in (
+                                "анализ",
+                                "кров",
+                                "натощак",
+                                "подготовк",
+                                "забор",
+                                "процедурн",
+                                "сдать кровь",
+                                "blood",
+                                "test",
+                                "analysis",
+                                "prep",
+                                "lab",
+                            )
+                        ):
+                            opt_score += 2.0
+
+                    elif opt_key == "fluorography" or any(
+                        k in desc_lower for k in ("fluorography", "x-ray", "флюорограф", "рентген")
+                    ):
+                        if any(
+                            w in t_lower
+                            for w in (
+                                "флюорограф",
+                                "рентген",
+                                "флюшка",
+                                "снимок",
+                                "fluorography",
+                                "x-ray",
+                                "xray",
+                            )
+                        ):
+                            opt_score += 2.0
+
+                    elif opt_key in ("FAQ_DOCUMENTS", "documents") or any(
+                        k in desc_lower
+                        for k in ("document", "passport", "policy", "документ", "паспорт", "полис")
+                    ):
+                        if any(
+                            w in t_lower
+                            for w in (
+                                "документ",
+                                "паспорт",
+                                "полис",
+                                "омс",
+                                "что взять",
+                                "что с собой",
+                                "document",
+                                "passport",
+                                "policy",
+                                "insurance",
+                            )
+                        ):
+                            opt_score += 2.0
+
+                    elif opt_key in ("FAQ_PRICE", "prices") or any(
+                        k in desc_lower for k in ("price", "cost", "paid", "платн", "стоим", "цен")
+                    ):
+                        if any(
+                            w in t_lower
+                            for w in (
+                                "стоим",
+                                "цен",
+                                "скольк",
+                                "платн",
+                                "рубл",
+                                "прайс",
+                                "оплат",
+                                "price",
+                                "cost",
+                                "fee",
+                                "how much",
+                                "pay",
+                            )
+                        ):
+                            opt_score += 2.0
+
+                    elif opt_key in ("FAQ_INFO", "INFO") or any(
+                        k in desc_lower for k in ("general faq", "faq_info", "справочный вопрос")
+                    ):
+                        if any(
+                            w in t_lower
+                            for w in (
+                                "где наход",
+                                "какой этаж",
+                                "какой кабинет",
+                                "адрес",
+                                "анализ",
+                                "кров",
+                                "флюорограф",
+                                "рентген",
+                                "документ",
+                                "паспорт",
+                                "полис",
+                                "стоим",
+                                "цен",
+                                "скольк",
+                                "платн",
+                                "location",
+                                "floor",
+                                "address",
+                                "blood",
+                                "test",
+                                "document",
+                                "price",
+                                "cost",
+                            )
+                        ):
+                            opt_score += 2.0
 
                     scores[opt_key] = opt_score
                     if opt_score > best_score:
@@ -195,21 +671,45 @@ class FakeDecisionEngine:
                 # Binary boolean calibrated probability P(true)
                 q_text = str(q.get("question", "")).lower()
                 p_true = 0.05
-                if "угроз" in q_text or "жизн" in q_text or "остр" in q_text:
+                if any(k in q_text for k in ("threat", "vital", "acute", "угроз", "жизн", "остр")):
                     if any(
-                        w in doc_lower
-                        for w in ("давит в груди", "боль в груди", "задыхается", "инфаркт")
+                        w in t_lower
+                        for w in (
+                            "давит в груди",
+                            "боль в груди",
+                            "болит в груди",
+                            "задыхается",
+                            "задыхаюсь",
+                            "инфаркт",
+                            "инсульт",
+                            "удушье",
+                            "не дышит",
+                            "chest pain",
+                            "heart attack",
+                            "choking",
+                            "can't breathe",
+                            "cannot breathe",
+                            "stroke",
+                        )
                     ):
                         if any(
-                            neg in doc_lower
-                            for neg in ("не задыха", "нет боли", "кровью обливается")
+                            neg in t_lower
+                            for neg in (
+                                "не задыха",
+                                "нет боли",
+                                "не болит",
+                                "кровью обливается",
+                                "not choking",
+                                "no chest pain",
+                                "no pain",
+                            )
                         ):
                             p_true = 0.02
                         else:
                             p_true = 0.98
-                    elif "кровью обливается" in doc_lower:
+                    elif "кровью обливается" in t_lower or "heart bleeds" in t_lower:
                         p_true = 0.01
-                elif any(w in doc_lower for w in ("да", "верно", "подтверждаю")):
+                elif _any_word(t_lower, ("да", "верно", "подтверждаю", "yes", "true", "correct")):
                     p_true = 0.95
 
                 answers[qid] = {
@@ -225,22 +725,36 @@ class FakeDecisionEngine:
                 start_idx, end_idx = -1, -1
 
                 # Extract doctor name or specialty if requested
-                if "врач" in q_text or "специалист" in q_text or "фамил" in q_text:
+                if any(
+                    k in q_text
+                    for k in ("surname", "doctor", "specialist", "специалист", "фамил", "врач")
+                ):
                     for name in (
                         "богдановой",
                         "богданова",
+                        "богданов",
                         "иванов",
+                        "иванова",
                         "смирнова",
+                        "смирнов",
                         "терапевт",
                         "кардиолог",
                         "хирург",
                         "окулист",
+                        "невролог",
+                        "отоларинголог",
+                        "лор",
+                        "pediatrician",
+                        "therapist",
+                        "cardiologist",
+                        "doctor",
+                        "surgeon",
                     ):
-                        pos = doc_lower.find(name)
+                        pos = t_lower.find(name)
                         if pos >= 0:
                             start_idx = pos
                             end_idx = pos + len(name)
-                            span_text = doc[start_idx:end_idx]
+                            span_text = target_text[start_idx:end_idx]
                             break
 
                 answers[qid] = {
@@ -252,7 +766,7 @@ class FakeDecisionEngine:
                 }
 
             elif qtype == "number":
-                nums = re.findall(r"\d+(?:[.,]\d+)?", doc)
+                nums = re.findall(r"\d+(?:[.,]\d+)?", target_text)
                 val = float(nums[0].replace(",", ".")) if nums else 0.0
                 answers[qid] = {
                     "type": "number",
@@ -268,11 +782,34 @@ class FakeDecisionEngine:
         return self.decide(state, questions)
 
 
+class DisabledDecisionEngine:
+    """Decision engine returned when THX-01 is disabled or failed to initialize in production.
+
+    Raises RuntimeError on decide/decide_async to prevent silent fail-open.
+    """
+
+    def __init__(self, reason: str = "Decision engine is disabled or failed to initialize"):
+        self.reason = reason
+
+    def warmup(self) -> None:
+        pass
+
+    def decide(self, state: Any, questions: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError(f"Decision engine unavailable: {self.reason}")
+
+    async def decide_async(self, state: Any, questions: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError(f"Decision engine unavailable: {self.reason}")
+
+
 def create_decision_engine(settings: Any) -> DecisionEngine:
     """Factory to create real THX-01 engine or test mock engine."""
-    if getattr(settings, "decision_mock", False) or not getattr(settings, "decision_enabled", True):
+    if getattr(settings, "decision_mock", False):
         logger.info("Using FakeDecisionEngine (mock mode)")
         return FakeDecisionEngine(device=getattr(settings, "decision_device", "cpu"))
+
+    if not getattr(settings, "decision_enabled", True):
+        logger.info("Decision engine is disabled in settings")
+        return DisabledDecisionEngine("Decision engine is disabled by configuration")
 
     try:
         from pathlib import Path
@@ -287,9 +824,6 @@ def create_decision_engine(settings: Any) -> DecisionEngine:
         engine = THX01Engine(device=device, model_path=model_path)
         return engine
     except Exception as exc:
-        logger.warning(
-            "Could not load THX-01 decision model (%s); falling back to FakeDecisionEngine: %s",
-            type(exc).__name__,
-            exc,
-        )
-        return FakeDecisionEngine(device=getattr(settings, "decision_device", "cpu"))
+        msg = f"Failed to load THX-01 decision model ({type(exc).__name__}: {exc})"
+        logger.error("%s; returning DisabledDecisionEngine to prevent silent mock fail-open.", msg)
+        return DisabledDecisionEngine(reason=msg)

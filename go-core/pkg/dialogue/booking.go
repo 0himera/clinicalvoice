@@ -150,14 +150,9 @@ func (f *FSMController) chooseSlot(ctx context.Context, s *models.CallSession, t
 			opt2 := fmt.Sprintf("%s, %s", s.Options[1].Doctor, FormatDateRussian(s.Options[1].StartTime))
 			chosenIdx, conf, err := f.decisionClient.DecideSlotChoice(ctx, text, opt1, opt2)
 			if err == nil {
-				if conf >= 0.88 {
-					if chosenIdx >= 0 && chosenIdx < len(s.Options) {
-						index = chosenIdx
-					} else {
-						s.Preference = text
-						return f.offer(ctx, s)
-					}
-				} else if conf >= 0.60 {
+				if conf >= 0.88 && chosenIdx >= 0 && chosenIdx < len(s.Options) {
+					index = chosenIdx
+				} else if conf >= 0.60 || chosenIdx < 0 {
 					if !s.SoftClarified {
 						s.SoftClarified = true
 						return StepResult{
@@ -212,35 +207,39 @@ func (f *FSMController) confirmBooking(ctx context.Context, s *models.CallSessio
 			}
 			confirmChoice, asideChoice, conf, err := f.decisionClient.DecideConfirmationAndAside(ctx, text, slotDesc, s.PendingPrompt)
 			if err == nil {
+				if asideChoice != "" && asideChoice != "NONE" {
+					switch asideChoice {
+					case "FAQ_LOCATION":
+						floor := "втором"
+						if s.SelectedSlot != nil && len(s.SelectedSlot.Room) > 0 {
+							switch s.SelectedSlot.Room[0] {
+							case '1':
+								floor = "первом"
+							case '2':
+								floor = "втором"
+							case '3':
+								floor = "третьем"
+							case '4':
+								floor = "четвёртом"
+							case '5':
+								floor = "пятом"
+							}
+						}
+						asideSpeech = fmt.Sprintf("Кабинет находится на %s этаже поликлиники.", floor)
+					case "FAQ_ANALYSIS":
+						asideSpeech = "Результаты анализов прикрепит врач на приёме."
+					case "FAQ_DOCUMENTS":
+						asideSpeech = "Возьмите с собой паспорт и полис ОМС."
+					case "FAQ_PRICE":
+						asideSpeech = "Приём по полису ОМС в нашей поликлинике бесплатный."
+					}
+					if asideSpeech != "" {
+						botSpeech := asideSpeech + " Подтверждаете выбранное время? Скажите да или нет."
+						return StepResult{NextState: StateConfirmBooking, BotSpeech: botSpeech, keepPrompt: true}
+					}
+				}
 				if conf >= 0.88 {
 					switch confirmChoice {
-					case "AFFIRM":
-						confirmed = true
-						switch asideChoice {
-						case "FAQ_LOCATION":
-							floor := "втором"
-							if s.SelectedSlot != nil && len(s.SelectedSlot.Room) > 0 {
-								switch s.SelectedSlot.Room[0] {
-								case '1':
-									floor = "первом"
-								case '2':
-									floor = "втором"
-								case '3':
-									floor = "третьем"
-								case '4':
-									floor = "четвёртом"
-								case '5':
-									floor = "пятом"
-								}
-							}
-							asideSpeech = fmt.Sprintf("Кабинет находится на %s этаже поликлиники.", floor)
-						case "FAQ_ANALYSIS":
-							asideSpeech = "Результаты анализов прикрепит врач на приёме."
-						case "FAQ_DOCUMENTS":
-							asideSpeech = "Возьмите с собой паспорт и полис ОМС."
-						case "FAQ_PRICE":
-							asideSpeech = "Приём по полису ОМС в нашей поликлинике бесплатный."
-						}
 					case "DENY", "CHANGE_SLOT":
 						if err := f.slotMgr.Release(ctx, s.CallID); err != nil {
 							return f.systemFailure(ctx, s)

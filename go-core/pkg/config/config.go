@@ -136,5 +136,16 @@ func Load() (Config, error) {
 		}
 		c.Schedule = paths[0]
 	}
+	if c.DecisionModelURL != "" {
+		du, err := url.Parse(c.DecisionModelURL)
+		if err != nil || du.Host == "" {
+			return c, fmt.Errorf("invalid DECISION_MODEL_URL")
+		}
+		host := du.Hostname()
+		ip := net.ParseIP(host)
+		if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+			return c, fmt.Errorf("DECISION_MODEL_URL host must be a loopback address (127.0.0.1 or localhost)")
+		}
+	}
 	return c, nil
 }

@@ -51,3 +51,37 @@ func TestEncryptedTranscriptsAreExplicitAndBoundedOnStand(t *testing.T) {
 		}
 	}
 }
+
+func TestDecisionModelURLMustBeLoopback(t *testing.T) {
+	t.Setenv("CORE_HOST", "127.0.0.1")
+	t.Setenv("PORT", "8080")
+	t.Setenv("MIS_API_URL", "https://example.test/api/v1")
+	t.Setenv("SCHEDULE_PATH", "schedule.xlsx")
+	t.Setenv("ALLOW_DEMO_CALLS_OUTSIDE_WINDOW", "false")
+	t.Setenv("DEBUG_DIALOGUE", "false")
+	t.Setenv("MIS_API_TOKEN", "")
+
+	for _, valid := range []string{
+		"http://127.0.0.1:8000/v1/decide",
+		"http://localhost:8000/v1/decide",
+		"http://127.0.0.2:9000/v1/decide",
+	} {
+		t.Setenv("DECISION_MODEL_URL", valid)
+		if _, err := Load(); err != nil {
+			t.Fatalf("expected %s to be valid loopback URL: %v", valid, err)
+		}
+	}
+
+	for _, invalid := range []string{
+		"http://example.com/v1/decide",
+		"http://192.168.1.100:8000/v1/decide",
+		"http://10.0.0.1:8000/v1/decide",
+		"not-a-url",
+	} {
+		t.Setenv("DECISION_MODEL_URL", invalid)
+		if _, err := Load(); err == nil {
+			t.Fatalf("expected %s to be rejected as non-loopback URL", invalid)
+		}
+	}
+}
+
