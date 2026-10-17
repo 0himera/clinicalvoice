@@ -130,7 +130,7 @@ func (c *DecisionClient) DecideVitalThreat(ctx context.Context, utterance string
 	questions := map[string]QuestionSpec{
 		"vital_threat": {
 			Type:     TypeNoul,
-			Question: "Сообщает ли пациент о непосредственном физическом приступе боли в сердце, инфаркте или удушье прямо сейчас, исключая эмоциональные метафоры и отрицания?",
+			Question: "Is the patient reporting an acute, real physical heart attack, severe vital choking or medical emergency right now, excluding negations and emotional metaphors?",
 		},
 	}
 	resp, err := c.Decide(ctx, state, questions)
@@ -157,31 +157,31 @@ func (c *DecisionClient) DecideConfirmationAndAside(ctx context.Context, utteran
 		return "", "", 0, fmt.Errorf("decision client is disabled")
 	}
 	state := map[string]string{
-		"шаг_диалога":           "подтверждение_записи",
-		"последний_вопрос_бота": lastPrompt,
-		"предложенный_талон":    heldSlotDesc,
-		"ответ_пациента":        utterance,
+		"dialogue_step":       "confirm_booking",
+		"last_prompt":         lastPrompt,
+		"held_slot":           heldSlotDesc,
+		"patient_utterance":   utterance,
 	}
 	questions := map[string]QuestionSpec{
 		"confirmation": {
 			Type:     TypeChoice,
-			Question: "Подтверждает ли пациент предложенную запись на приём?",
+			Question: "Does the patient confirm the proposed appointment slot?",
 			Criteria: map[string]string{
-				"AFFIRM":      "Согласие подтвердить текущий талон, готовность прийти",
-				"DENY":        "Отказ от предложенного талона или отмена",
-				"CHANGE_SLOT": "Просьба подобрать другое время или день",
-				"UNCERTAIN":   "Неуверенность, встречный вопрос или сомнение",
+				"AFFIRM":      "Yes, patient agrees and confirms appointment",
+				"DENY":        "No, patient rejects appointment or cancels",
+				"CHANGE_SLOT": "Patient asks for another date, day or time",
+				"UNCERTAIN":   "Patient is hesitant, unsure or asks questions without confirming",
 			},
 		},
 		"aside_intent": {
 			Type:     TypeChoice,
-			Question: "Содержит ли реплика дополнительный справочный вопрос?",
+			Question: "Did the patient ask an additional FAQ or informational question?",
 			Criteria: map[string]string{
-				"NONE":          "Дополнительного справочного вопроса нет",
-				"FAQ_LOCATION":  "Вопрос о кабинете, этаже, адресе поликлиники или как добраться",
-				"FAQ_ANALYSIS":  "Вопрос об анализах, флюорографии или подготовке к приёму",
-				"FAQ_DOCUMENTS": "Вопрос о необходимых документах (паспорт, полис)",
-				"FAQ_PRICE":     "Вопрос о стоимости, ценах или платных услугах",
+				"NONE":          "No additional question",
+				"FAQ_LOCATION":  "Question about cabinet, room number, floor, or clinic address",
+				"FAQ_ANALYSIS":  "Question about blood tests, preparation or fluorography",
+				"FAQ_DOCUMENTS": "Question about required documents (passport, insurance policy)",
+				"FAQ_PRICE":     "Question about prices, costs or paid services",
 			},
 		},
 	}
@@ -202,20 +202,20 @@ func (c *DecisionClient) DecideSlotChoice(ctx context.Context, utterance, opt1De
 		return -1, 0, fmt.Errorf("decision client is disabled")
 	}
 	state := map[string]string{
-		"шаг_диалога":           "выбор_слота",
-		"вариант_1":             opt1Desc,
-		"вариант_2":             opt2Desc,
-		"предпочтение_пациента": utterance,
+		"dialogue_step":      "choose_slot",
+		"option_1":           opt1Desc,
+		"option_2":           opt2Desc,
+		"patient_preference": utterance,
 	}
 	questions := map[string]QuestionSpec{
 		"slot_choice": {
 			Type:     TypeChoice,
-			Question: "Какой из двух предложенных вариантов приёма выбирает пациент?",
+			Question: "Which of the two offered appointment slots does the patient want?",
 			Criteria: map[string]string{
-				"OPTION_1":     fmt.Sprintf("Первый вариант: %s", opt1Desc),
-				"OPTION_2":     fmt.Sprintf("Второй вариант: %s", opt2Desc),
-				"DECLINE_BOTH": "Отказ от обоих предложенных вариантов или просьба другого времени",
-				"UNCERTAIN":    "Непонятно или не относится к выбору",
+				"OPTION_1":     fmt.Sprintf("Option 1: %s", opt1Desc),
+				"OPTION_2":     fmt.Sprintf("Option 2: %s", opt2Desc),
+				"DECLINE_BOTH": "Patient declines both offered options or asks for a different time",
+				"UNCERTAIN":    "Unclear or unrelated response",
 			},
 		},
 	}
@@ -241,13 +241,13 @@ func (c *DecisionClient) DecideDoctorExcerpt(ctx context.Context, utterance stri
 		return "", -1, -1, 0, fmt.Errorf("decision client is disabled")
 	}
 	state := map[string]string{
-		"шаг_диалога":      "поиск_врача",
-		"реплика_пациента": utterance,
+		"dialogue_step":     "find_doctor",
+		"patient_utterance": utterance,
 	}
 	questions := map[string]QuestionSpec{
 		"doctor_name": {
 			Type:     TypeExcerpt,
-			Question: "Фамилия или специальность врача, к которому обращается пациент",
+			Question: "Surname of the doctor the patient wants to visit",
 		},
 	}
 	resp, err := c.Decide(ctx, state, questions)
@@ -264,40 +264,40 @@ func (c *DecisionClient) DecideNLU(ctx context.Context, text, state string) (*Ex
 		return nil, fmt.Errorf("decision client is disabled")
 	}
 	dState := map[string]string{
-		"шаг_диалога":      state,
-		"реплика_пациента": text,
+		"dialogue_step":     state,
+		"patient_utterance": text,
 	}
 	questions := map[string]QuestionSpec{
 		"intent": {
 			Type:     TypeChoice,
-			Question: "Основное намерение пациента",
+			Question: "What is the primary intent of the patient?",
 			Criteria: map[string]string{
-				"BOOKING":        "Запись на приём к врачу или выбор специалиста",
-				"CANCEL":         "Отмена существующей записи на приём",
-				"RESCHEDULE":     "Перенос существующей записи на другую дату или время",
-				"CHECK_STATUS":   "Проверка деталей, даты или времени существующей записи",
-				"HOME_VISIT":     "Вызов врача на дом",
-				"DIRECTORY_INFO": "Справочный вопрос о списке врачей и специальностей",
-				"FAQ_INFO":       "Справочный вопрос (адрес, анализы, документы, флюорография, цены)",
-				"OPERATOR":       "Просьба соединить с оператором или регистратором",
-				"UNKNOWN":        "Непонятный запрос или не относится к медицинским услугам",
+				"BOOKING":        "Booking an appointment with a doctor",
+				"CANCEL":         "Cancelling an existing appointment",
+				"RESCHEDULE":     "Rescheduling an existing appointment to another date or time",
+				"CHECK_STATUS":   "Checking details or date of an existing appointment",
+				"HOME_VISIT":     "Calling a doctor for a home visit",
+				"DIRECTORY_INFO": "Asking about the directory of doctors and specialties",
+				"FAQ_INFO":       "General FAQ (address, tests, documents, fluorography, prices)",
+				"OPERATOR":       "Requesting to speak with a human operator or registrar",
+				"UNKNOWN":        "Unclear request or unrelated to medical clinic services",
 			},
 		},
 		"faq_topic": {
 			Type:     TypeChoice,
-			Question: "Тема справочного вопроса",
+			Question: "Topic of the FAQ question if applicable",
 			Criteria: map[string]string{
-				"none":         "Не относится к FAQ",
-				"address":      "Адрес поликлиники, этаж, как добраться",
-				"documents":    "Документы для приёма, полис ОМС, паспорт, прикрепление",
-				"blood_test":   "Сдача анализов, забор крови, процедурный кабинет",
-				"fluorography": "Флюорография или рентген",
-				"prices":       "Стоимость услуг или платный приём",
+				"none":         "Not an FAQ topic",
+				"address":      "Clinic address, building, floor or how to get there",
+				"documents":    "Required documents, insurance policy, passport",
+				"blood_test":   "Blood test, laboratory, treatment room",
+				"fluorography": "Fluorography, X-ray",
+				"prices":       "Prices, costs or commercial services",
 			},
 		},
 		"doctor_name": {
 			Type:     TypeExcerpt,
-			Question: "Фамилия врача, если названа",
+			Question: "Doctor surname if mentioned",
 		},
 	}
 
