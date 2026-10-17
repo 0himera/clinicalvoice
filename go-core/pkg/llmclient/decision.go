@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+	"unicode"
 )
 
 // DecisionType represents the type of question evaluated by the decision model.
@@ -300,6 +302,32 @@ func (c *DecisionClient) DecideDoctorExcerpt(ctx context.Context, utterance stri
 	return ans.Text, ans.Start, ans.End, ans.Probability, nil
 }
 
+func mightContainDoctor(text, state string) bool {
+	if strings.Contains(state, "SPECIALTY") || strings.Contains(state, "SPECIALIST") || strings.Contains(state, "SCHEDULE") {
+		return true
+	}
+	lower := strings.ToLower(text)
+	keywords := []string{
+		"врач", "доктор", "терапевт", "хирург", "офтальмолог", "окулист",
+		"лор", "невролог", "кардиолог", "стоматолог", "специалист", "фамил",
+		"к ", "у ",
+	}
+	for _, kw := range keywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	// Check for capitalized words (potential surname), ignoring the first word
+	words := strings.Fields(text)
+	for i := 1; i < len(words); i++ {
+		r := []rune(words[i])
+		if len(r) > 0 && unicode.IsUpper(r[0]) {
+			return true
+		}
+	}
+	return false
+}
+
 // DecideNLU evaluates user intent, doctor name excerpt, and FAQ topic in a single forward pass.
 func (c *DecisionClient) DecideNLU(ctx context.Context, text, state string) (*ExtractedNLU, error) {
 	if !c.IsEnabled() {
@@ -337,10 +365,13 @@ func (c *DecisionClient) DecideNLU(ctx context.Context, text, state string) (*Ex
 				"prices":       "Prices, costs or commercial services",
 			},
 		},
-		"doctor_name": {
+	}
+
+	if mightContainDoctor(text, state) {
+		questions["doctor_name"] = QuestionSpec{
 			Type:     TypeExcerpt,
 			Question: "Doctor surname if mentioned",
-		},
+		}
 	}
 
 	resp, err := c.Decide(ctx, dState, questions)

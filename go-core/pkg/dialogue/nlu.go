@@ -22,6 +22,15 @@ type nluTurn struct {
 }
 
 // understand makes at most one bounded NLU request per turn. It never executes
+func isDecisionConfident(nlu *llmclient.ExtractedNLU) bool {
+	return nlu != nil && (nlu.Intent != "UNKNOWN" || nlu.DoctorName != "" || nlu.Specialty != "" || nlu.FAQTopic != "")
+}
+
+func isLLMConfident(nlu *llmclient.ExtractedNLU) bool {
+	return nlu != nil && (nlu.Intent != "UNKNOWN" || nlu.Specialty != "" || nlu.BirthDate != "" || nlu.LastName != "" || nlu.OperatorRequested || nlu.IsEmergency)
+}
+
+// understand makes at most one bounded NLU request per turn. It never executes
 // model instructions or accepts generated speech as an answer to the patient.
 func (f *FSMController) understand(ctx context.Context, text, state string) *llmclient.ExtractedNLU {
 	if strings.TrimSpace(text) == "" {
@@ -42,32 +51,133 @@ func (f *FSMController) understand(ctx context.Context, text, state string) *llm
 	turn.attempted = true
 	started := time.Now()
 
-	// Prioritize Decision Model (System-1, ~37ms, zero output tokens)
-	if hasDecision {
+	// 1. If only Decision Model is enabled:
+	if hasDecision && !hasLLM {
 		nlu, err := f.decisionClient.DecideNLU(ctx, text, state)
 		turn.latency = time.Since(started).Milliseconds()
-		if err == nil && nlu != nil && (nlu.Intent != "UNKNOWN" || nlu.DoctorName != "" || nlu.Specialty != "" || nlu.FAQTopic != "") {
+		if err == nil && isDecisionConfident(nlu) {
 			turn.result, turn.intent = nlu, nlu.Intent
 			turn.used = true
 			return nlu
 		}
+		return nil
 	}
 
-	if !hasLLM {
-		return nil
-	}
-	nlu, err := f.llmClient.ExtractSlots(ctx, text, state)
-	turn.latency = time.Since(started).Milliseconds()
-	if err != nil {
-		turn.failure = "provider_error"
-		if ctx.Err() != nil || strings.Contains(err.Error(), "deadline") || strings.Contains(err.Error(), "Timeout") {
-			turn.failure = "timeout"
+	// 2. If only LLM is enabled:
+	if !hasDecision && hasLLM {
+		nlu, err := f.llmClient.ExtractSlots(ctx, text, state)
+		turn.latency = time.Since(started).Milliseconds()
+		if err != nil {
+			turn.failure = "provider_error"
+			if ctx.Err() != nil || strings.Contains(err.Error(), "deadline") || strings.Contains(err.Error(), "Timeout") {
+				turn.failure = "timeout"
+			}
+			return nil
 		}
+		turn.result, turn.intent = nlu, nlu.Intent
+		turn.used = isLLMConfident(nlu)
+		return nlu
+	}
+
+	// 3. Speculative Parallel Execution: Both System-1 Decision Model and System-2 LLM are enabled.
+	// Evaluate both concurrently to eliminate sequential fallback latency (max(t_dec, t_llm) instead of t_dec + t_llm).
+	type decResult struct {
+		nlu *llmclient.ExtractedNLU
+		err error
+	}
+	type llmResult struct {
+		nlu *llmclient.ExtractedNLU
+		err error
+	}
+
+	decCtx, decCancel := context.WithCancel(ctx)
+	defer decCancel()
+	llmCtx, llmCancel := context.WithCancel(ctx)
+	defer llmCancel()
+
+	chDec := make(chan decResult, 1)
+	chLLM := make(chan llmResult, 1)
+
+	go func() {
+		nlu, err := f.decisionClient.DecideNLU(decCtx, text, state)
+		chDec <- decResult{nlu: nlu, err: err}
+	}()
+
+	go func() {
+		nlu, err := f.llmClient.ExtractSlots(llmCtx, text, state)
+		chLLM <- llmResult{nlu: nlu, err: err}
+	}()
+
+	var decRes *decResult
+	var llmRes *llmResult
+
+	select {
+	case d := <-chDec:
+		decRes = &d
+		if d.err == nil && isDecisionConfident(d.nlu) {
+			llmCancel()
+			turn.latency = time.Since(started).Milliseconds()
+			turn.result, turn.intent = d.nlu, d.nlu.Intent
+			turn.used = true
+			return d.nlu
+		}
+		// Decision Model finished first but is not confident or failed. Await LLM.
+		select {
+		case l := <-chLLM:
+			llmRes = &l
+		case <-ctx.Done():
+			return nil
+		}
+
+	case l := <-chLLM:
+		llmRes = &l
+		// LLM finished first. Check if Decision Model is about to finish with a confident System-1 answer.
+		select {
+		case d := <-chDec:
+			decRes = &d
+			if d.err == nil && isDecisionConfident(d.nlu) {
+				turn.latency = time.Since(started).Milliseconds()
+				turn.result, turn.intent = d.nlu, d.nlu.Intent
+				turn.used = true
+				return d.nlu
+			}
+		case <-time.After(150 * time.Millisecond):
+			decCancel()
+		case <-ctx.Done():
+			return nil
+		}
+
+	case <-ctx.Done():
 		return nil
 	}
-	turn.result, turn.intent = nlu, nlu.Intent
-	turn.used = nlu.Intent != "UNKNOWN" || nlu.Specialty != "" || nlu.BirthDate != "" || nlu.LastName != "" || nlu.OperatorRequested || nlu.IsEmergency
-	return nlu
+
+	turn.latency = time.Since(started).Milliseconds()
+	if llmRes != nil {
+		if llmRes.err != nil {
+			turn.failure = "provider_error"
+			if ctx.Err() != nil || strings.Contains(llmRes.err.Error(), "deadline") || strings.Contains(llmRes.err.Error(), "Timeout") {
+				turn.failure = "timeout"
+			}
+			if decRes != nil && decRes.nlu != nil {
+				turn.result, turn.intent = decRes.nlu, decRes.nlu.Intent
+				turn.used = decRes.nlu.Intent != "UNKNOWN"
+				return decRes.nlu
+			}
+			return nil
+		}
+		nlu := llmRes.nlu
+		turn.result, turn.intent = nlu, nlu.Intent
+		turn.used = isLLMConfident(nlu)
+		return nlu
+	}
+
+	if decRes != nil && decRes.nlu != nil {
+		turn.result, turn.intent = decRes.nlu, decRes.nlu.Intent
+		turn.used = decRes.nlu.Intent != "UNKNOWN"
+		return decRes.nlu
+	}
+
+	return nil
 }
 
 func (f *FSMController) nluSpecialty(value string) string {
