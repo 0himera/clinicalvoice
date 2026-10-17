@@ -1,11 +1,16 @@
 package safety
 
 import (
+	"context"
 	"regexp"
 	"strings"
 
 	"github.com/himera/tochka-voice/go-core/pkg/models"
 )
+
+type DecisionThreatDecider interface {
+	DecideVitalThreat(ctx context.Context, utterance string) (isThreat bool, pTrue float64, err error)
+}
 
 type SafetyResult struct {
 	Level       models.RedFlagLevel
@@ -45,6 +50,11 @@ type FastGate struct {
 	categoryBRegex   *regexp.Regexp
 	operatorReqRegex *regexp.Regexp
 	complaintRegex   *regexp.Regexp
+	threatDecider    DecisionThreatDecider
+}
+
+func (fg *FastGate) SetThreatDecider(d DecisionThreatDecider) {
+	fg.threatDecider = d
 }
 
 func NewFastGate() *FastGate {
@@ -162,6 +172,12 @@ func NewFastGate() *FastGate {
 
 // Check проверяет входящий текст реплики пациента
 func (fg *FastGate) Check(text string) SafetyResult {
+	return fg.CheckWithContext(context.Background(), text)
+}
+
+// CheckWithContext checks the utterance with context, using the System-1 decision model
+// to filter out false alarms (e.g. metaphors, negations) while ensuring fail-closed safety.
+func (fg *FastGate) CheckWithContext(ctx context.Context, text string) SafetyResult {
 	norm := strings.TrimSpace(strings.ToLower(text))
 	if norm == "" {
 		return SafetyResult{Level: models.FlagNone}
@@ -169,12 +185,23 @@ func (fg *FastGate) Check(text string) SafetyResult {
 
 	// 1. Проверка Категории А (наивысший приоритет P1, прерывает диалог!)
 	if match := fg.categoryARegex.FindString(norm); match != "" {
-		return SafetyResult{
-			Level:       models.FlagCategoryA,
-			MatchedText: match,
-			ActionCode:  "R-01",
-			RouteTarget: "M0", // 103/112
-			BotResponse: "Немедленно звоните сто три или сто двенадцать! Соединяю с дежурным сотрудником поликлиники.",
+		isThreat := true
+		if fg.threatDecider != nil {
+			var err error
+			isThreat, _, err = fg.threatDecider.DecideVitalThreat(ctx, text)
+			if err != nil {
+				// Fail-closed safety: if model check errors or times out, treat as genuine threat!
+				isThreat = true
+			}
+		}
+		if isThreat {
+			return SafetyResult{
+				Level:       models.FlagCategoryA,
+				MatchedText: match,
+				ActionCode:  "R-01",
+				RouteTarget: "M0", // 103/112
+				BotResponse: "Немедленно звоните сто три или сто двенадцать! Соединяю с дежурным сотрудником поликлиники.",
+			}
 		}
 	}
 

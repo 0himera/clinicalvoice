@@ -24,7 +24,12 @@ type nluTurn struct {
 // understand makes at most one bounded NLU request per turn. It never executes
 // model instructions or accepts generated speech as an answer to the patient.
 func (f *FSMController) understand(ctx context.Context, text, state string) *llmclient.ExtractedNLU {
-	if strings.TrimSpace(text) == "" || f.llmClient == nil || !f.llmClient.IsEnabled() {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	hasDecision := f.decisionClient != nil && f.decisionClient.IsEnabled()
+	hasLLM := f.llmClient != nil && f.llmClient.IsEnabled()
+	if !hasDecision && !hasLLM {
 		return nil
 	}
 	turn, _ := ctx.Value(nluContextKey{}).(*nluTurn)
@@ -36,6 +41,21 @@ func (f *FSMController) understand(ctx context.Context, text, state string) *llm
 	}
 	turn.attempted = true
 	started := time.Now()
+
+	// Prioritize Decision Model (System-1, ~37ms, zero output tokens)
+	if hasDecision {
+		nlu, err := f.decisionClient.DecideNLU(ctx, text, state)
+		turn.latency = time.Since(started).Milliseconds()
+		if err == nil && nlu != nil && (nlu.Intent != "UNKNOWN" || nlu.DoctorName != "" || nlu.Specialty != "" || nlu.FAQTopic != "") {
+			turn.result, turn.intent = nlu, nlu.Intent
+			turn.used = true
+			return nlu
+		}
+	}
+
+	if !hasLLM {
+		return nil
+	}
 	nlu, err := f.llmClient.ExtractSlots(ctx, text, state)
 	turn.latency = time.Since(started).Milliseconds()
 	if err != nil {

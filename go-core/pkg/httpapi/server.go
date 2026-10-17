@@ -46,6 +46,7 @@ type Config struct {
 	SessionTTL  time.Duration
 	Redirector  Redirector
 	Escalate    dialogue.EscalateFunc
+	Gate        *safety.FastGate
 	Trace       *slog.Logger
 	Events      *slog.Logger
 }
@@ -92,7 +93,11 @@ func New(cfg Config) *Server {
 	if cfg.SessionTTL <= 0 {
 		cfg.SessionTTL = 10 * time.Minute
 	}
-	s := &Server{cfg: cfg, sessions: map[string]*session{}, gate: safety.NewFastGate()}
+	gate := cfg.Gate
+	if gate == nil {
+		gate = safety.NewFastGate()
+	}
+	s := &Server{cfg: cfg, sessions: map[string]*session{}, gate: gate}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.health)
@@ -387,7 +392,7 @@ func (s *Server) interrupt(w http.ResponseWriter, r *http.Request) {
 		problem(w, 410, "call is closed")
 		return
 	}
-	gate := s.gate.Check(req.Text)
+	gate := s.gate.CheckWithContext(r.Context(), req.Text)
 	if gate.Level == models.FlagNone {
 		write(w, 200, map[string]bool{"interrupted": false})
 		return

@@ -145,9 +145,35 @@ func (f *FSMController) chooseSlot(ctx context.Context, s *models.CallSession, t
 		if Confirmation(text) == IntentDeny {
 			return say(StateChooseSlot, "Назовите удобный день или время: например, завтра после обеда.")
 		}
-		result := f.retry(ctx, s, "Выберите первый или второй вариант, либо назовите удобный день и время.")
-		result.DiagnosticCode = "slot_choice_unrecognized"
-		return result
+		if len(s.Options) >= 2 && f.decisionClient != nil && f.decisionClient.IsEnabled() {
+			opt1 := fmt.Sprintf("%s, %s", s.Options[0].Doctor, FormatDateRussian(s.Options[0].StartTime))
+			opt2 := fmt.Sprintf("%s, %s", s.Options[1].Doctor, FormatDateRussian(s.Options[1].StartTime))
+			chosenIdx, conf, err := f.decisionClient.DecideSlotChoice(ctx, text, opt1, opt2)
+			if err == nil {
+				if conf >= 0.88 {
+					if chosenIdx >= 0 && chosenIdx < len(s.Options) {
+						index = chosenIdx
+					} else {
+						s.Preference = text
+						return f.offer(ctx, s)
+					}
+				} else if conf >= 0.60 {
+					if !s.SoftClarified {
+						s.SoftClarified = true
+						return StepResult{
+							NextState:  StateChooseSlot,
+							BotSpeech:  "Уточните, какой вариант вам больше подходит: первый или второй?",
+							keepPrompt: true,
+						}
+					}
+				}
+			}
+		}
+		if index < 0 || index >= len(s.Options) {
+			result := f.retry(ctx, s, "Выберите первый или второй вариант, либо назовите удобный день и время.")
+			result.DiagnosticCode = "slot_choice_unrecognized"
+			return result
+		}
 	}
 	chosen := s.Options[index]
 	key, err := f.slotMgr.HoldSlot(chosen.DoctorID, chosen.StartTime, s.CallID, 2*time.Minute)
@@ -167,6 +193,8 @@ func (f *FSMController) confirmBooking(ctx context.Context, s *models.CallSessio
 	if Confirmation(text) == IntentAffirm && isTaskIntent(intent) && intent != IntentBooking && !(s.CurrentScenario == models.ScenarioReschedule && intent == IntentReschedule) {
 		return f.retry(ctx, s, "Сейчас подтверждаем выбранного врача и время. Подтверждаете запись? Скажите да или нет.")
 	}
+	confirmed := false
+	var asideSpeech string
 	switch Confirmation(text) {
 	case IntentDeny:
 		if err := f.slotMgr.Release(ctx, s.CallID); err != nil {
@@ -175,8 +203,51 @@ func (f *FSMController) confirmBooking(ctx context.Context, s *models.CallSessio
 		s.SelectedSlot = nil
 		return f.offer(ctx, s)
 	case IntentAffirm:
+		confirmed = true
 	default:
-		return f.retry(ctx, s, "Подтверждаете выбранного врача и время? Скажите да или нет.")
+		if f.decisionClient != nil && f.decisionClient.IsEnabled() {
+			slotDesc := ""
+			if s.SelectedSlot != nil {
+				slotDesc = fmt.Sprintf("%s, %s", s.SelectedSlot.Doctor, FormatDateRussian(s.SelectedSlot.StartTime))
+			}
+			confirmChoice, asideChoice, conf, err := f.decisionClient.DecideConfirmationAndAside(ctx, text, slotDesc, s.PendingPrompt)
+			if err == nil {
+				if conf >= 0.88 {
+					switch confirmChoice {
+					case "AFFIRM":
+						confirmed = true
+						switch asideChoice {
+						case "FAQ_LOCATION":
+							asideSpeech = "Кабинет находится на втором этаже поликлиники."
+						case "FAQ_ANALYSIS":
+							asideSpeech = "Результаты анализов прикрепит врач на приёме."
+						case "FAQ_DOCUMENTS":
+							asideSpeech = "Возьмите с собой паспорт и полис ОМС."
+						case "FAQ_PRICE":
+							asideSpeech = "Приём по полису ОМС в нашей поликлинике бесплатный."
+						}
+					case "DENY", "CHANGE_SLOT":
+						if err := f.slotMgr.Release(ctx, s.CallID); err != nil {
+							return f.systemFailure(ctx, s)
+						}
+						s.SelectedSlot = nil
+						return f.offer(ctx, s)
+					}
+				} else if conf >= 0.60 {
+					if !s.SoftClarified {
+						s.SoftClarified = true
+						return StepResult{
+							NextState:  StateConfirmBooking,
+							BotSpeech:  "Уточните, пожалуйста: вы подтверждаете запись на это время? Скажите да или нет.",
+							keepPrompt: true,
+						}
+					}
+				}
+			}
+		}
+		if !confirmed {
+			return f.retry(ctx, s, "Подтверждаете выбранного врача и время? Скажите да или нет.")
+		}
 	}
 	if s.SelectedSlot == nil || s.Patient == nil {
 		return f.systemFailure(ctx, s)
@@ -233,6 +304,9 @@ func (f *FSMController) confirmBooking(ctx context.Context, s *models.CallSessio
 	if s.CurrentScenario == models.ScenarioReschedule {
 		outcome = "RESCHEDULED"
 		speech = "Готово, запись перенесена. Прежнее время освобождено. Могу ещё помочь?"
+	}
+	if asideSpeech != "" {
+		speech = asideSpeech + " " + speech
 	}
 	state := StateFinal
 	if f.saveContact != nil && s.CallerNumber != "" && s.OutboundVisitID == 0 {

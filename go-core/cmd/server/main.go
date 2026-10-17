@@ -123,6 +123,11 @@ func run() error {
 		}
 		return store.SaveContact(ctx, storage.Contact{ClientID: id, Endpoint: endpoint, ReminderConsent: consent})
 	})
+	if cfg.DecisionModelEnabled {
+		decisionClient := llmclient.NewDecisionClient(cfg.DecisionModelURL, cfg.DecisionModelEnabled)
+		fsm.SetDecisionClient(decisionClient)
+		slog.Info("decision model enabled", "url", cfg.DecisionModelURL)
+	}
 	if os.Getenv("LLM_PROVIDER") != "" && os.Getenv("LLM_PROVIDER") != "none" {
 		llm := llmclient.NewUniversalLLMClient(llmclient.LoadConfigFromEnv())
 		if err := llm.Validate(); err != nil {
@@ -138,7 +143,7 @@ func run() error {
 		redirector = telephony.AMI{Address: cfg.AMIAddress, Username: cfg.AMIUser, Secret: cfg.AMISecret}
 	}
 	reminders := campaign.New(store, mis, dialer, snapshot.Holidays, cfg.DemoCalls)
-	api := httpapi.New(httpapi.Config{FSM: fsm, MIS: mis, Slots: slots, Store: store, Campaign: reminders, Token: cfg.APIToken, Mode: mode, Redirector: redirector, Escalate: outbox.Enqueue, Trace: trace, Events: slog.Default()})
+	api := httpapi.New(httpapi.Config{FSM: fsm, MIS: mis, Slots: slots, Store: store, Campaign: reminders, Token: cfg.APIToken, Mode: mode, Redirector: redirector, Escalate: outbox.Enqueue, Gate: fsm.Gate(), Trace: trace, Events: slog.Default()})
 	server := &http.Server{Addr: cfg.Address, Handler: api, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 45 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	workers, stopWorkers := context.WithCancel(ctx)
 	defer stopWorkers()

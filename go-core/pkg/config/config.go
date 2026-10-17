@@ -28,8 +28,10 @@ type Config struct {
 	TechnicalLogDir string
 	Transcripts     bool
 	TranscriptDir   string
-	TranscriptKey   string
-	TranscriptHours int
+	TranscriptKey        string
+	TranscriptHours      int
+	DecisionModelURL     string
+	DecisionModelEnabled bool
 }
 
 // LoadDotEnv accepts literal KEY=VALUE lines. Existing process variables win;
@@ -87,6 +89,8 @@ func Load() (Config, error) {
 	c.Transcripts = os.Getenv("TRANSCRIPT_LOGGING") == "true"
 	c.TranscriptDir = env("TRANSCRIPT_LOG_DIR", "var/transcripts")
 	c.TranscriptKey = env("TRANSCRIPT_KEY_PATH", "var/secrets/transcripts.key")
+	c.DecisionModelURL = env("DECISION_MODEL_URL", "http://127.0.0.1:8000/v1/decide")
+	c.DecisionModelEnabled = os.Getenv("DECISION_MODEL_ENABLED") != "false"
 	c.TranscriptHours = 24
 	if raw := os.Getenv("TRANSCRIPT_RETENTION_HOURS"); raw != "" {
 		value, err := strconv.Atoi(raw)

@@ -52,21 +52,29 @@ type StepResult struct {
 type EscalateFunc func(context.Context, int, string) error
 type SaveContactFunc func(context.Context, int, string, bool) error
 type FSMController struct {
-	slotMgr      *slotmgr.SlotManager
-	misClient    misclient.MISClient
-	llmClient    *llmclient.UniversalLLMClient
-	gate         *safety.FastGate
-	escalate     EscalateFunc
-	saveContact  SaveContactFunc
-	patientLocks patientLocks
+	slotMgr        *slotmgr.SlotManager
+	misClient      misclient.MISClient
+	llmClient      *llmclient.UniversalLLMClient
+	decisionClient *llmclient.DecisionClient
+	gate           *safety.FastGate
+	escalate       EscalateFunc
+	saveContact    SaveContactFunc
+	patientLocks   patientLocks
 }
 
 func NewFSMController(sm *slotmgr.SlotManager, mc misclient.MISClient) *FSMController {
 	return &FSMController{slotMgr: sm, misClient: mc, gate: safety.NewFastGate()}
 }
 func (f *FSMController) SetLLMClient(c *llmclient.UniversalLLMClient) { f.llmClient = c }
-func (f *FSMController) SetEscalator(fn EscalateFunc)                 { f.escalate = fn }
-func (f *FSMController) SetContactSaver(fn SaveContactFunc)           { f.saveContact = fn }
+func (f *FSMController) SetDecisionClient(c *llmclient.DecisionClient) {
+	f.decisionClient = c
+	if f.gate != nil && c != nil {
+		f.gate.SetThreatDecider(c)
+	}
+}
+func (f *FSMController) Gate() *safety.FastGate               { return f.gate }
+func (f *FSMController) SetEscalator(fn EscalateFunc)       { f.escalate = fn }
+func (f *FSMController) SetContactSaver(fn SaveContactFunc) { f.saveContact = fn }
 func (f *FSMController) InitialGreeting() StepResult {
 	return say(StateMenu, "Здравствуйте! Регистратура поликлиники номер семь, виртуальный помощник. Чем могу помочь?")
 }
@@ -106,6 +114,9 @@ func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession,
 	understanding := &nluTurn{}
 	ctx = context.WithValue(ctx, nluContextKey{}, understanding)
 	defer func() {
+		if s.CurrentState != result.NextState {
+			s.SoftClarified = false
+		}
 		s.CurrentState = result.NextState
 		if !result.keepPrompt && result.BotSpeech != "" {
 			s.PendingPrompt = result.BotSpeech
@@ -122,7 +133,7 @@ func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession,
 	if s.CurrentState == StateDone {
 		return StepResult{NextState: StateDone, ShouldHangup: true}
 	}
-	if gate := f.gate.Check(text); gate.Level != models.FlagNone {
+	if gate := f.gate.CheckWithContext(ctx, text); gate.Level != models.FlagNone {
 		target := gate.Extension()
 		if s.CurrentState == StateTransfer && s.TransferTarget == target {
 			return StepResult{NextState: StateTransfer, TransferTarget: target, BotSpeech: gate.BotResponse}
@@ -180,7 +191,7 @@ func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession,
 		return f.transfer(ctx, s, "101", "R-07: сведения о другом пациенте, полномочия не проверены", "Сведения о чужих записях сообщает сотрудник после проверки полномочий. Соединяю с регистратором.")
 	}
 	identityContinuation := s.CurrentState == StateIdentity && intent == IntentBooking && ExtractBirthDate(text) != "" && f.extractSpecialty(text) == "" && f.extractDoctor(text) == nil
-	slotChoiceInFlight := s.CurrentState == StateChooseSlot && (intent == IntentBooking || (s.CurrentScenario == models.ScenarioReschedule && intent == IntentReschedule))
+	slotChoiceInFlight := s.CurrentState == StateChooseSlot && (intent == IntentBooking || (s.CurrentScenario == models.ScenarioReschedule && intent == IntentReschedule) || containsAny(norm, "вариант", "попозже", "пораньше", "перв", "втор"))
 	if canSwitchTask(s.CurrentState) && isTaskIntent(intent) && !identityContinuation && !slotChoiceInFlight {
 		return f.menu(ctx, s, text)
 	}

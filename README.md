@@ -60,12 +60,14 @@ flowchart TD
         AMI["Asterisk AMI\n(Редирект на 104)"]
         DB[("SQLite WAL\n(контакты, outbox)")]
         MIS["МИС Клиники\n(REST API GMT+4)"]
+        Decision["Decision Model\n(THX-01 CPU 37мс)"]
         LLM["Fallback NLU\n(Ollama / Gemini)"]
     end
 
     Core -.->|"Экстренный вызов"| AMI
     Core <-->|"Локальные сущности"| DB
     SlotMgr <-->|"Бронирование / Отмена"| MIS
+    Core -.->|"System-1 решения"| Decision
     Core -.->|"Сложные реплики"| LLM
 ```
 
@@ -104,7 +106,7 @@ tochka-voice/
 │       ├── slotmgr/         # Жизненный цикл слотов (held → pending → booked), локи
 │       ├── campaign/        # Модуль исходящих кампаний напоминаний (С-10)
 │       ├── escalation/      # Outbox очередь заявок сотрудникам (вызовы на дом, операторы)
-│       ├── llmclient/       # Клиент Fallback NLU (локальная Gemma 4 / Gemini Live)
+│       ├── llmclient/       # Fallback NLU и System-1 Decision Client (THX-01 mmBERT)
 │       ├── misclient/       # Клиент REST API МИС (лимит 10 rps, кэш, пагинация)
 │       ├── schedule/        # Загрузка и разбор расписания врачей из Excel (GMT+4)
 │       └── storage/         # Хранилище SQLite с WAL, миграции и локальные контакты
@@ -115,6 +117,7 @@ tochka-voice/
 │   │   ├── asr.py           # Потоковое распознавание Faster-Whisper (CUDA / CPU)
 │   │   ├── tts.py           # Локальный синтез Silero TTS v4 (8 кГц PCM16)
 │   │   ├── vad.py           # Потоковый Silero VAD (сброс после 640 мс тишины)
+│   │   ├── decision.py      # System-1 Decision Engine (THX-01 CPU ~37 мс, warmup, RLCD)
 │   │   └── diagnostics.py   # Метрики аудиосигнала, клиппинг и технические логи
 │   ├── tests/               # Юнит-тесты телефонии, VAD и аудио-пайплайна
 │   └── main.py              # Точка входа AI Worker (:8000)

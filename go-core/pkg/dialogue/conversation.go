@@ -57,7 +57,11 @@ func (f *FSMController) conversation(ctx context.Context, s *models.CallSession,
 	}
 	// Literal address/reason collection is not a FAQ. Questions about clinic facts
 	// elsewhere may interrupt a task without replacing its fields or held slot.
-	if s.CurrentState != "" && s.CurrentState != StateMenu && s.CurrentState != StateFinal && s.CurrentState != StateDirectory && informationQuestion(norm) && !isTaskIntent(ParseIntent(text)) {
+	compositeConfirm := f.decisionClient != nil && f.decisionClient.IsEnabled() &&
+		(s.CurrentState == StateConfirmBooking || s.CurrentState == StateConfirmCancel) &&
+		containsAny(norm, "да", "подтвержда", "соглас", "давайте", "хорошо", "верно", "подходит", "конечно", "удобн")
+	if s.CurrentState != "" && s.CurrentState != StateMenu && s.CurrentState != StateFinal && s.CurrentState != StateDirectory &&
+		!compositeConfirm && informationQuestion(norm) && !isTaskIntent(ParseIntent(text)) {
 		doctorSchedule := scheduleQuestion(norm) && (f.extractSpecialty(text) != "" || f.extractDoctor(text) != nil)
 		if answer, ok := FAQ(text); ok && !doctorSchedule {
 			return f.aside(s, answer), true

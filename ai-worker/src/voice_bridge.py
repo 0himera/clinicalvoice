@@ -5,7 +5,7 @@ import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -23,7 +23,9 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.services = services or await asyncio.to_thread(load_services, settings.device)
+        app.state.services = services or await asyncio.to_thread(
+            load_services, settings.device, settings
+        )
         bridge = None
         if settings.telephony:
             from src.telephony import Bridge
@@ -56,7 +58,13 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
         ready = getattr(app.state, "services", None)
         if ready is None:
             raise HTTPException(503, "models are not ready")
-        return {"status": "ok", "device": ready.device, "asr_ready": True, "tts_ready": True}
+        return {
+            "status": "ok",
+            "device": ready.device,
+            "asr_ready": True,
+            "tts_ready": True,
+            "decision_ready": getattr(ready, "decision", None) is not None,
+        }
 
     @app.post("/asr")
     async def transcribe_audio(file: Annotated[UploadFile, File()]):
@@ -89,7 +97,37 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
             raise HTTPException(503, "synthesis capacity is busy") from None
         return Response(audio, media_type="audio/wav")
 
+    @app.post("/v1/decide")
+    @app.post("/decide")
+    async def evaluate_decision(req: DecisionRequestBody):
+        ready = getattr(app.state, "services", None)
+        if ready is None or getattr(ready, "decision", None) is None:
+            raise HTTPException(503, "decision engine is not ready")
+        t0 = time.perf_counter()
+        try:
+            async with asyncio.timeout(5):
+                answers = await ready.decision.decide_async(req.state, req.questions)
+                if (
+                    isinstance(answers, dict)
+                    and "answers" in answers
+                    and isinstance(answers["answers"], dict)
+                ):
+                    answers = answers["answers"]
+        except TimeoutError:
+            raise HTTPException(504, "decision evaluation timed out") from None
+        except Exception as exc:
+            logger.warning("Decision engine failed (%s): %s", type(exc).__name__, exc)
+            raise HTTPException(500, f"decision engine error: {exc}") from None
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+        return {"model": "THX-01", "answers": answers, "latency_ms": elapsed_ms}
+
     return app
+
+
+class DecisionRequestBody(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    state: Any
+    questions: dict[str, Any]
 
 
 class SynthesisRequest(BaseModel):

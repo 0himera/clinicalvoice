@@ -166,4 +166,5 @@ type CallSession struct {
 	NLUIntent            string       `json:"-"`
 	NLULatencyMS         int64        `json:"-"`
 	NLUError             string       `json:"-"`
+	SoftClarified        bool         `json:"-"`
 }

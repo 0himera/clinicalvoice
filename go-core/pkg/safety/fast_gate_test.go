@@ -1,6 +1,7 @@
 package safety
 
 import (
+	"context"
 	"testing"
 
 	"github.com/himera/tochka-voice/go-core/pkg/models"
@@ -91,3 +92,39 @@ func TestFastGateNormalSpeech(t *testing.T) {
 		}
 	}
 }
+
+type mockThreatDecider struct {
+	isThreat bool
+	pTrue    float64
+	err      error
+}
+
+func (m *mockThreatDecider) DecideVitalThreat(ctx context.Context, utterance string) (bool, float64, error) {
+	return m.isThreat, m.pTrue, m.err
+}
+
+func TestFastGateWithThreatDecider(t *testing.T) {
+	gate := NewFastGate()
+
+	// 1. Metaphor filtered out (P < 0.15, isThreat = false)
+	gate.SetThreatDecider(&mockThreatDecider{isThreat: false, pTrue: 0.02})
+	res := gate.Check("У меня сердце кровью обливается, что не могу записаться к Богдановой")
+	if res.Level != models.FlagNone {
+		t.Fatalf("expected metaphor to be filtered, got level %v", res.Level)
+	}
+
+	// 2. Real emergency (isThreat = true)
+	gate.SetThreatDecider(&mockThreatDecider{isThreat: true, pTrue: 0.98})
+	res = gate.Check("У меня болит в груди и трудно дышать")
+	if res.Level != models.FlagCategoryA {
+		t.Fatalf("expected Category A for real threat, got level %v", res.Level)
+	}
+
+	// 3. Fail-closed on error (err != nil -> treated as emergency)
+	gate.SetThreatDecider(&mockThreatDecider{isThreat: true, pTrue: 1.0, err: context.DeadlineExceeded})
+	res = gate.Check("Кажется, инфаркт")
+	if res.Level != models.FlagCategoryA {
+		t.Fatalf("expected fail-closed Category A on error, got level %v", res.Level)
+	}
+}
+

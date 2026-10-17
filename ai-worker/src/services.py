@@ -2,7 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class ASR(Protocol):
@@ -19,11 +19,18 @@ class VAD(Protocol):
     def new_stream(self): ...
 
 
+class Decision(Protocol):
+    def decide(self, state, questions): ...
+    async def decide_async(self, state, questions): ...
+    def warmup(self): ...
+
+
 @dataclass
 class Services:
     asr: ASR
     tts: TTS
     vad: VAD
+    decision: Decision | None = None
     device: str = "test"
     capacity: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(2))
     _work: set[asyncio.Task] = field(default_factory=set)
@@ -56,10 +63,11 @@ class Services:
         await asyncio.gather(*self._work, return_exceptions=True)
 
 
-def load_services(requested_device: str) -> Services:
+def load_services(requested_device: str, settings: Any = None) -> Services:
     import torch
 
     from src.asr_service import FasterWhisperASR
+    from src.decision import create_decision_engine
     from src.tts_service import SileroTTSService
     from src.vad_service import SileroVADService
 
@@ -68,9 +76,14 @@ def load_services(requested_device: str) -> Services:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is unavailable")
+
+    decision_engine = create_decision_engine(settings)
+    decision_engine.warmup()
+
     return Services(
         asr=FasterWhisperASR(device=device),
         tts=SileroTTSService(device=device),
         vad=SileroVADService(),
+        decision=decision_engine,
         device=device,
     )
