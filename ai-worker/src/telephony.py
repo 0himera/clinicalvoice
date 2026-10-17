@@ -362,14 +362,26 @@ class Bridge:
                             return
                         text, version = recognized_text
                         started_core = time.monotonic()
-                        result = await self.post(
-                            "/api/dialogue/turn",
-                            {
-                                "call_id": call_id,
-                                "turn_id": str(uuid.uuid4()),
-                                "text": text,
-                            },
-                        )
+                        try:
+                            result = await self.post(
+                                "/api/dialogue/turn",
+                                {
+                                    "call_id": call_id,
+                                    "turn_id": str(uuid.uuid4()),
+                                    "text": text,
+                                },
+                            )
+                        except (httpx.HTTPError, TimeoutError, OSError) as exc:
+                            logger.error("Core dialogue turn failed for %s: %s", call_id, exc)
+                            call.result["transfer_target"] = "101"
+                            await respond(
+                                {
+                                    "bot_speech": "Произошла техническая ошибка. Перевожу вас на оператора.",
+                                    "transfer_target": "101",
+                                },
+                                version,
+                            )
+                            return
                         self.trace(
                             "dialogue_result",
                             call_id=call_id,

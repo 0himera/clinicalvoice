@@ -31,7 +31,7 @@ func TestDecisionModel_CompositeConfirmationAndAside(t *testing.T) {
 	defer server.Close()
 
 	r := newRig(t)
-	dClient := llmclient.NewDecisionClient(server.URL, true)
+	dClient := llmclient.NewDecisionClient(server.URL, "", true)
 	r.fsm.SetDecisionClient(dClient)
 
 	// Advance to StateConfirmBooking
@@ -79,7 +79,7 @@ func TestDecisionModel_GrayZoneSoftClarify(t *testing.T) {
 	defer server.Close()
 
 	r := newRig(t)
-	dClient := llmclient.NewDecisionClient(server.URL, true)
+	dClient := llmclient.NewDecisionClient(server.URL, "", true)
 	r.fsm.SetDecisionClient(dClient)
 
 	// Advance to StateConfirmBooking
@@ -127,7 +127,7 @@ func TestDecisionModel_SlotChoiceSemanticPreference(t *testing.T) {
 	defer server.Close()
 
 	r := newRig(t)
-	dClient := llmclient.NewDecisionClient(server.URL, true)
+	dClient := llmclient.NewDecisionClient(server.URL, "", true)
 	r.fsm.SetDecisionClient(dClient)
 
 	// Advance to choose slot state
@@ -172,7 +172,7 @@ func TestDecisionModel_FalseAlarmSafetyFilter(t *testing.T) {
 	defer server.Close()
 
 	r := newRig(t)
-	dClient := llmclient.NewDecisionClient(server.URL, true)
+	dClient := llmclient.NewDecisionClient(server.URL, "", true)
 	r.fsm.SetDecisionClient(dClient)
 
 	// Phrase contains "сердце...бол", which triggers Category A in pure regex,

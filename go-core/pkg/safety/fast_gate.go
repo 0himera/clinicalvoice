@@ -46,11 +46,13 @@ func (r SafetyResult) Priority() int {
 }
 
 type FastGate struct {
-	categoryARegex   *regexp.Regexp
-	categoryBRegex   *regexp.Regexp
-	operatorReqRegex *regexp.Regexp
-	complaintRegex   *regexp.Regexp
-	threatDecider    DecisionThreatDecider
+	categoryARegex         *regexp.Regexp
+	categoryBRegex         *regexp.Regexp
+	operatorReqRegex       *regexp.Regexp
+	operatorNegationRegex  *regexp.Regexp
+	complaintRegex         *regexp.Regexp
+	complaintNegationRegex *regexp.Regexp
+	threatDecider          DecisionThreatDecider
 }
 
 func (fg *FastGate) SetThreatDecider(d DecisionThreatDecider) {
@@ -162,11 +164,22 @@ func NewFastGate() *FastGate {
 		`(^|[^а-яё])прокуратур`,
 	}
 
+	operatorNegPatterns := []string{
+		`(^|[^а-яё])не\s+(нуж[ее]н|перевод|соедин|надо\s+оператор)`,
+		`(^|[^а-яё])без\s+оператор`,
+	}
+	complaintNegPatterns := []string{
+		`(^|[^а-яё])не\s+(буду\s+жаловат|жалоба)`,
+		`(^|[^а-яё])без\s+жалоб`,
+	}
+
 	return &FastGate{
-		categoryARegex:   regexp.MustCompile(`(?i)` + strings.Join(catAPatterns, "|")),
-		categoryBRegex:   regexp.MustCompile(`(?i)` + strings.Join(catBPatterns, "|")),
-		operatorReqRegex: regexp.MustCompile(`(?i)` + strings.Join(operatorPatterns, "|")),
-		complaintRegex:   regexp.MustCompile(`(?i)` + strings.Join(complaintPatterns, "|")),
+		categoryARegex:         regexp.MustCompile(`(?i)` + strings.Join(catAPatterns, "|")),
+		categoryBRegex:         regexp.MustCompile(`(?i)` + strings.Join(catBPatterns, "|")),
+		operatorReqRegex:       regexp.MustCompile(`(?i)` + strings.Join(operatorPatterns, "|")),
+		operatorNegationRegex:  regexp.MustCompile(`(?i)` + strings.Join(operatorNegPatterns, "|")),
+		complaintRegex:         regexp.MustCompile(`(?i)` + strings.Join(complaintPatterns, "|")),
+		complaintNegationRegex: regexp.MustCompile(`(?i)` + strings.Join(complaintNegPatterns, "|")),
 	}
 }
 
@@ -207,12 +220,14 @@ func (fg *FastGate) CheckWithContext(ctx context.Context, text string) SafetyRes
 
 	// 2. Требование человека (R-02)
 	if match := fg.operatorReqRegex.FindString(norm); match != "" {
-		return SafetyResult{
-			Level:       models.FlagOperatorReq,
-			MatchedText: match,
-			ActionCode:  "R-02",
-			RouteTarget: "M2", // Регистратор (доб. 101-105)
-			BotResponse: "Соединяю с сотрудником регистратуры, пожалуйста, оставайтесь на линии.",
+		if fg.operatorNegationRegex == nil || !fg.operatorNegationRegex.MatchString(norm) {
+			return SafetyResult{
+				Level:       models.FlagOperatorReq,
+				MatchedText: match,
+				ActionCode:  "R-02",
+				RouteTarget: "M2", // Регистратор (доб. 101-105)
+				BotResponse: "Соединяю с сотрудником регистратуры, пожалуйста, оставайтесь на линии.",
+			}
 		}
 	}
 
@@ -229,12 +244,14 @@ func (fg *FastGate) CheckWithContext(ctx context.Context, text string) SafetyRes
 
 	// 4. Жалоба (R-03, С-15)
 	if match := fg.complaintRegex.FindString(norm); match != "" {
-		return SafetyResult{
-			Level:       models.FlagComplaint,
-			MatchedText: match,
-			ActionCode:  "R-03",
-			RouteTarget: "M3", // Старший администратор (доб. 5 / 105)
-			BotResponse: "Мне жаль, что так вышло. Соединяю вас со старшим администратором.",
+		if fg.complaintNegationRegex == nil || !fg.complaintNegationRegex.MatchString(norm) {
+			return SafetyResult{
+				Level:       models.FlagComplaint,
+				MatchedText: match,
+				ActionCode:  "R-03",
+				RouteTarget: "M3", // Старший администратор (доб. 5 / 105)
+				BotResponse: "Мне жаль, что так вышло. Соединяю вас со старшим администратором.",
+			}
 		}
 	}
 

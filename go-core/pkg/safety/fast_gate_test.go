@@ -128,3 +128,23 @@ func TestFastGateWithThreatDecider(t *testing.T) {
 	}
 }
 
+func TestFastGateNegatedOperatorAndComplaint(t *testing.T) {
+	gate := NewFastGate()
+
+	negatedPhrases := []string{
+		"Мне не нужен оператор, я сам разберусь",
+		"Не переводите на человека",
+		"Я без оператора запишусь",
+		"Не надо оператора",
+		"Я не буду жаловаться",
+		"Это не жалоба, просто уточняю",
+	}
+
+	for _, p := range negatedPhrases {
+		res := gate.Check(p)
+		if res.Level == models.FlagOperatorReq || res.Level == models.FlagComplaint {
+			t.Errorf("Expected phrase %q not to trigger operator or complaint, got level %v", p, res.Level)
+		}
+	}
+}
+

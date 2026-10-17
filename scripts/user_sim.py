@@ -1191,10 +1191,10 @@ async def run_batch(args: argparse.Namespace, filtered: list[dict[str, Any]]) ->
 
                     # Setup backend
                     if args.backend == "gemini-live":
-                        api_key = os.getenv("GEMINI_API_KEY", "")
+                        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("LLM_API_KEY", "")
                         if not api_key:
                             print(
-                                "Error: GEMINI_API_KEY is required for gemini-live backend.",
+                                "Error: GEMINI_API_KEY or LLM_API_KEY is required for gemini-live backend.",
                                 file=sys.stderr,
                             )
                             sys.exit(1)

@@ -124,7 +124,7 @@ func run() error {
 		return store.SaveContact(ctx, storage.Contact{ClientID: id, Endpoint: endpoint, ReminderConsent: consent})
 	})
 	if cfg.DecisionModelEnabled {
-		decisionClient := llmclient.NewDecisionClient(cfg.DecisionModelURL, cfg.DecisionModelEnabled)
+		decisionClient := llmclient.NewDecisionClient(cfg.DecisionModelURL, cfg.AIAPIToken, cfg.DecisionModelEnabled)
 		fsm.SetDecisionClient(decisionClient)
 		slog.Info("decision model enabled", "url", cfg.DecisionModelURL)
 	}

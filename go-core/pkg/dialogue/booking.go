@@ -218,7 +218,22 @@ func (f *FSMController) confirmBooking(ctx context.Context, s *models.CallSessio
 						confirmed = true
 						switch asideChoice {
 						case "FAQ_LOCATION":
-							asideSpeech = "Кабинет находится на втором этаже поликлиники."
+							floor := "втором"
+							if s.SelectedSlot != nil && len(s.SelectedSlot.Room) > 0 {
+								switch s.SelectedSlot.Room[0] {
+								case '1':
+									floor = "первом"
+								case '2':
+									floor = "втором"
+								case '3':
+									floor = "третьем"
+								case '4':
+									floor = "четвёртом"
+								case '5':
+									floor = "пятом"
+								}
+							}
+							asideSpeech = fmt.Sprintf("Кабинет находится на %s этаже поликлиники.", floor)
 						case "FAQ_ANALYSIS":
 							asideSpeech = "Результаты анализов прикрепит врач на приёме."
 						case "FAQ_DOCUMENTS":

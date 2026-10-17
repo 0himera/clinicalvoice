@@ -16,7 +16,7 @@ func TestDecisionClient_VitalThreatFailClosed(t *testing.T) {
 	}))
 	defer server500.Close()
 
-	client := NewDecisionClient(server500.URL, true)
+	client := NewDecisionClient(server500.URL, "", true)
 	isThreat, _, err := client.DecideVitalThreat(context.Background(), "болит в груди")
 	if err == nil {
 		t.Fatalf("expected error on 500")
@@ -40,7 +40,7 @@ func TestDecisionClient_VitalThreatFailClosed(t *testing.T) {
 	}))
 	defer serverThreat.Close()
 
-	clientThreat := NewDecisionClient(serverThreat.URL, true)
+	clientThreat := NewDecisionClient(serverThreat.URL, "", true)
 	isThreat, p, err := clientThreat.DecideVitalThreat(context.Background(), "давит в груди и трудно дышать")
 	if err != nil || !isThreat || p < 0.9 {
 		t.Fatalf("expected real threat: isThreat=%v, p=%v, err=%v", isThreat, p, err)
@@ -61,7 +61,7 @@ func TestDecisionClient_VitalThreatFailClosed(t *testing.T) {
 	}))
 	defer serverMetaphor.Close()
 
-	clientMetaphor := NewDecisionClient(serverMetaphor.URL, true)
+	clientMetaphor := NewDecisionClient(serverMetaphor.URL, "", true)
 	isThreat, p, err = clientMetaphor.DecideVitalThreat(context.Background(), "сердце кровью обливается")
 	if err != nil || isThreat || p >= 0.15 {
 		t.Fatalf("expected false alarm filtered: isThreat=%v, p=%v, err=%v", isThreat, p, err)
@@ -91,7 +91,7 @@ func TestDecisionClient_ConfirmationAndAside(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewDecisionClient(server.URL, true)
+	client := NewDecisionClient(server.URL, "", true)
 	confirm, aside, conf, err := client.DecideConfirmationAndAside(context.Background(), "Да, подтверждаю, а флюорографию брать?", "Иванов, 12 мая 10:00", "Подтверждаете?")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -117,7 +117,7 @@ func TestDecisionClient_SlotChoice(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewDecisionClient(server.URL, true)
+	client := NewDecisionClient(server.URL, "", true)
 	idx, conf, err := client.DecideSlotChoice(context.Background(), "давайте тот что попозже", "10:00", "15:30")
 	if err != nil || idx != 1 || conf < 0.90 {
 		t.Fatalf("unexpected slot choice: idx=%d, conf=%f, err=%v", idx, conf, err)
@@ -142,7 +142,7 @@ func TestDecisionClient_DoctorExcerpt(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewDecisionClient(server.URL, true)
+	client := NewDecisionClient(server.URL, "", true)
 	text, start, end, prob, err := client.DecideDoctorExcerpt(context.Background(), "запишите к терапевту Богдановой пожалуйста")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -153,13 +153,33 @@ func TestDecisionClient_DoctorExcerpt(t *testing.T) {
 }
 
 func TestDecisionClient_Disabled(t *testing.T) {
-	client := NewDecisionClient("", false)
+	client := NewDecisionClient("", "", false)
 	if client.IsEnabled() {
 		t.Fatalf("client should be disabled")
 	}
 	_, _, _, err := client.DecideConfirmationAndAside(context.Background(), "да", "слот", "подтверждаете?")
 	if err == nil {
 		t.Fatalf("expected error on disabled client")
+	}
+}
+
+func TestDecisionClient_AuthorizationHeader(t *testing.T) {
+	var receivedAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		resp := DecisionResponse{
+			Model:   "THX-01",
+			Answers: map[string]DecisionAnswer{},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewDecisionClient(server.URL, "secret-test-token-12345", true)
+	_, _ = client.Decide(context.Background(), "state", map[string]QuestionSpec{})
+
+	if receivedAuth != "Bearer secret-test-token-12345" {
+		t.Fatalf("expected 'Bearer secret-test-token-12345', got %q", receivedAuth)
 	}
 }
 
@@ -170,7 +190,7 @@ func TestDecisionClient_Timeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewDecisionClient(server.URL, true)
+	client := NewDecisionClient(server.URL, "", true)
 	// Timeout is 250ms, server sleeps 300ms
 	_, err := client.Decide(context.Background(), "state", map[string]QuestionSpec{})
 	if err == nil {
@@ -203,7 +223,7 @@ func TestDecisionClient_DecideNLU(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewDecisionClient(server.URL, true)
+	client := NewDecisionClient(server.URL, "", true)
 	nlu, err := client.DecideNLU(context.Background(), "запишите к Богдановой", "меню")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

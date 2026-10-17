@@ -492,7 +492,12 @@ func (s *Server) contact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.cfg.MIS.GetClient(r.Context(), id); err != nil {
-		problem(w, 404, "client not found")
+		var api *misclient.APIError
+		if errors.As(err, &api) && api.StatusCode == 404 {
+			problem(w, 404, "client not found")
+			return
+		}
+		problem(w, 502, "MIS unavailable")
 		return
 	}
 	if err := s.cfg.Store.SaveContact(r.Context(), storage.Contact{ClientID: id, Endpoint: req.Endpoint, ReminderConsent: req.Consent}); err != nil {

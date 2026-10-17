@@ -160,6 +160,7 @@ func (r *Runner) dispatch(ctx context.Context, id int, now time.Time) error {
 	}
 	v, err := r.mis.GetVisit(ctx, visitID)
 	if err != nil {
+		_, _ = r.store.DB.ExecContext(context.WithoutCancel(ctx), "UPDATE reminders SET status='PENDING', lease_until=0 WHERE visit_id=? AND scheduled_at=? AND status='DIALING'", visitID, at)
 		return err
 	}
 	if v.Status != models.VisitPlanned || v.ScheduledAt != at {
@@ -167,6 +168,7 @@ func (r *Runner) dispatch(ctx context.Context, id int, now time.Time) error {
 	}
 	visitTime, err := models.ParseDateTime(v.ScheduledAt)
 	if err != nil {
+		_, _ = r.store.DB.ExecContext(context.WithoutCancel(ctx), "UPDATE reminders SET status='PENDING', lease_until=0 WHERE visit_id=? AND scheduled_at=? AND status='DIALING'", visitID, at)
 		return err
 	}
 	if !visitTime.After(now) {
@@ -174,12 +176,14 @@ func (r *Runner) dispatch(ctx context.Context, id int, now time.Time) error {
 	}
 	contact, err := r.store.Contact(ctx, v.ClientID)
 	if err != nil {
+		_, _ = r.store.DB.ExecContext(context.WithoutCancel(ctx), "UPDATE reminders SET status='PENDING', lease_until=0 WHERE visit_id=? AND scheduled_at=? AND status='DIALING'", visitID, at)
 		return err
 	}
 	if !contact.ReminderConsent {
 		return r.Outcome(ctx, visitID, "OPTED_OUT")
 	}
 	if err = r.dialer.Originate(ctx, contact.Endpoint, visitID); err != nil {
+		_, _ = r.store.DB.ExecContext(context.WithoutCancel(ctx), "UPDATE reminders SET status='PENDING', lease_until=0 WHERE visit_id=? AND scheduled_at=? AND status='DIALING'", visitID, at)
 		return fmt.Errorf("originate reminder: %w", err)
 	}
 	return nil
@@ -217,7 +221,10 @@ func (r *Runner) Run(ctx context.Context) {
 				}
 			}
 			for i := 0; i < r.maxConcurrent; i++ {
-				if err := r.dispatch(ctx, 0, now); err != nil {
+				dispCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+				err := r.dispatch(dispCtx, 0, now)
+				cancel()
+				if err != nil {
 					slog.Warn("dispatch reminder", "error", err)
 					break
 				}

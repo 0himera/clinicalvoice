@@ -30,6 +30,7 @@ type Config struct {
 	TranscriptDir   string
 	TranscriptKey        string
 	TranscriptHours      int
+	AIAPIToken           string
 	DecisionModelURL     string
 	DecisionModelEnabled bool
 }
@@ -89,6 +90,7 @@ func Load() (Config, error) {
 	c.Transcripts = os.Getenv("TRANSCRIPT_LOGGING") == "true"
 	c.TranscriptDir = env("TRANSCRIPT_LOG_DIR", "var/transcripts")
 	c.TranscriptKey = env("TRANSCRIPT_KEY_PATH", "var/secrets/transcripts.key")
+	c.AIAPIToken = os.Getenv("AI_API_TOKEN")
 	c.DecisionModelURL = env("DECISION_MODEL_URL", "http://127.0.0.1:8000/v1/decide")
 	c.DecisionModelEnabled = os.Getenv("DECISION_MODEL_ENABLED") != "false"
 	c.TranscriptHours = 24

@@ -56,17 +56,19 @@ type DecisionResponse struct {
 // DecisionClient interacts with the local System-1 decision sidecar (e.g. THX-01 / mmBERT).
 type DecisionClient struct {
 	endpoint   string
+	apiToken   string
 	enabled    bool
 	httpClient *http.Client
 }
 
 // NewDecisionClient initializes the DecisionClient with a strict timeout (250ms).
-func NewDecisionClient(endpoint string, enabled bool) *DecisionClient {
+func NewDecisionClient(endpoint, apiToken string, enabled bool) *DecisionClient {
 	if endpoint == "" {
 		endpoint = "http://127.0.0.1:8000/v1/decide"
 	}
 	return &DecisionClient{
 		endpoint: endpoint,
+		apiToken: apiToken,
 		enabled:  enabled,
 		httpClient: &http.Client{
 			Timeout: 250 * time.Millisecond,
@@ -97,6 +99,9 @@ func (c *DecisionClient) Decide(ctx context.Context, state any, questions map[st
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if c.apiToken != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiToken)
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {

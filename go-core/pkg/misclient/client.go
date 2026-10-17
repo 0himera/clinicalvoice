@@ -207,26 +207,34 @@ func (c *RealMISClient) ListDoctors(ctx context.Context) ([]models.Doctor, error
 }
 func (c *RealMISClient) CreateClient(ctx context.Context, req models.ClientCreate) (*models.Client, error) {
 	var out models.Client
-	err := c.doRequest(ctx, http.MethodPost, "/clients", req, &out)
-	return &out, err
+	if err := c.doRequest(ctx, http.MethodPost, "/clients", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 func (c *RealMISClient) FindClients(ctx context.Context, last, first, birth string) ([]models.Client, error) {
 	return list[models.Client](ctx, c, "/clients", url.Values{"last_name": {last}, "first_name": {first}, "birth_date": {birth}})
 }
 func (c *RealMISClient) GetClient(ctx context.Context, id int) (*models.Client, error) {
 	var out models.Client
-	err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/clients/%d", id), nil, &out)
-	return &out, err
+	if err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/clients/%d", id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 func (c *RealMISClient) UpdateClient(ctx context.Context, id int, req models.ClientUpdate) (*models.Client, error) {
 	var out models.Client
-	err := c.doRequest(ctx, http.MethodPatch, fmt.Sprintf("/clients/%d", id), req, &out)
-	return &out, err
+	if err := c.doRequest(ctx, http.MethodPatch, fmt.Sprintf("/clients/%d", id), req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 func (c *RealMISClient) CreateVisit(ctx context.Context, req models.VisitCreate) (*models.Visit, error) {
 	var out models.Visit
-	err := c.doRequest(ctx, http.MethodPost, "/visits", req, &out)
-	return &out, err
+	if err := c.doRequest(ctx, http.MethodPost, "/visits", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 func (c *RealMISClient) ListVisits(ctx context.Context, id int, status string) ([]models.Visit, error) {
 	params := url.Values{}
@@ -240,16 +248,22 @@ func (c *RealMISClient) ListVisits(ctx context.Context, id int, status string) (
 }
 func (c *RealMISClient) GetVisit(ctx context.Context, id int) (*models.Visit, error) {
 	var out models.Visit
-	err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/visits/%d", id), nil, &out)
-	return &out, err
+	if err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/visits/%d", id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 func (c *RealMISClient) UpdateVisit(ctx context.Context, id int, req models.VisitUpdate) (*models.Visit, error) {
 	var out models.Visit
-	err := c.doRequest(ctx, http.MethodPatch, fmt.Sprintf("/visits/%d", id), req, &out)
-	return &out, err
+	if err := c.doRequest(ctx, http.MethodPatch, fmt.Sprintf("/visits/%d", id), req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 func (c *RealMISClient) CreateEscalation(ctx context.Context, req models.EscalationCreate) (*models.Escalation, error) {
 	var out models.Escalation
-	err := c.doRequest(ctx, http.MethodPost, "/escalations", req, &out)
-	return &out, err
+	if err := c.doRequest(ctx, http.MethodPost, "/escalations", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }

@@ -32,16 +32,21 @@ class Services:
     vad: VAD
     decision: Decision | None = None
     device: str = "test"
-    capacity: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(2))
+    asr_capacity: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(2))
+    tts_capacity: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(2))
     _work: set[asyncio.Task] = field(default_factory=set)
 
-    async def _run(self, function, *args):
-        await self.capacity.acquire()
+    @property
+    def capacity(self) -> asyncio.Semaphore:
+        return self.asr_capacity
+
+    async def _run(self, sem: asyncio.Semaphore, function, *args):
+        await sem.acquire()
         task = asyncio.create_task(asyncio.to_thread(function, *args))
         self._work.add(task)
 
         def finished(done):
-            self.capacity.release()
+            sem.release()
             self._work.discard(done)
             if not done.cancelled():
                 done.exception()  # retrieve errors even if the HTTP caller disconnected
@@ -52,12 +57,12 @@ class Services:
         return await asyncio.shield(task)
 
     async def transcribe(self, audio: bytes) -> str:
-        return await self._run(self.asr.transcribe_wav, audio)
+        return await self._run(self.asr_capacity, self.asr.transcribe_wav, audio)
 
     async def synthesize(
         self, text: str, sample_rate: int = 24000, speaker: str | None = None
     ) -> bytes:
-        return await self._run(self.tts.synthesize, text, sample_rate, speaker)
+        return await self._run(self.tts_capacity, self.tts.synthesize, text, sample_rate, speaker)
 
     async def close(self):
         await asyncio.gather(*self._work, return_exceptions=True)
@@ -80,9 +85,15 @@ def load_services(requested_device: str, settings: Any = None) -> Services:
     decision_engine = create_decision_engine(settings)
     decision_engine.warmup()
 
+    tts = SileroTTSService(device=device)
+    try:
+        tts.synthesize("прогрев", 8000)
+    except Exception:
+        pass
+
     return Services(
         asr=FasterWhisperASR(device=device),
-        tts=SileroTTSService(device=device),
+        tts=tts,
         vad=SileroVADService(),
         decision=decision_engine,
         device=device,

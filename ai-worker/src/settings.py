@@ -42,7 +42,10 @@ class Settings:
             debug_log_dir=os.getenv("DEBUG_LOG_DIR", "var/debug"),
             technical_logs=True,
             technical_log_dir=os.getenv("TECHNICAL_LOG_DIR", "var/log"),
-            decision_enabled=os.getenv("DECISION_ENABLED", "true").lower() == "true",
+            decision_enabled=os.getenv(
+                "DECISION_MODEL_ENABLED", os.getenv("DECISION_ENABLED", "true")
+            ).lower()
+            == "true",
             decision_device=os.getenv("DECISION_DEVICE", "cpu").lower(),
             decision_model_path=os.getenv("DECISION_MODEL_PATH", "doofz/THX-01"),
             decision_mock=os.getenv("DECISION_MOCK", "false").lower() == "true",
