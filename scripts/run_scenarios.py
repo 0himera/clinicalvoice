@@ -29,9 +29,16 @@ def isolated_server(port: int = 18080):
     """Spins up an isolated Go server with a clean mock database."""
     db_path = ROOT / "var" / f"scenario-runner-{uuid.uuid4().hex[:8]}.db"
     env = os.environ.copy()
+    llm_allow_remote = os.getenv("LLM_ALLOW_REMOTE", "false").lower() in ("true", "1")
+    default_base_url = "http://127.0.0.1:11434/v1"
+    raw_base_url = os.getenv("LLM_BASE_URL", default_base_url)
+    is_loopback = any(h in raw_base_url for h in ("127.0.0.1", "localhost", "::1"))
+    final_base_url = raw_base_url if (llm_allow_remote or is_loopback) else default_base_url
+
     env.update(
         {
             "PORT": str(port),
+            "HTTP_PORT": str(port),
             "CORE_HOST": "127.0.0.1",
             "CORE_URL": f"http://127.0.0.1:{port}",
             "MIS_API_TOKEN": "",
@@ -41,11 +48,11 @@ def isolated_server(port: int = 18080):
             "ALLOW_DEMO_CALLS_OUTSIDE_WINDOW": "false",
             "LLM_PROVIDER": os.getenv("LLM_PROVIDER", "ollama"),
             "LLM_MODEL": os.getenv("LLM_MODEL", "gemma4:e4b"),
-            "LLM_BASE_URL": os.getenv("LLM_BASE_URL", "http://127.0.0.1:11434/v1"),
-            "LLM_API_KEY": "",
-            "LLM_ALLOW_REMOTE": "false",
-            "LLM_TIMEOUT_SEC": "12",
-            "LLM_MAX_TOKENS": "256",
+            "LLM_BASE_URL": final_base_url,
+            "LLM_API_KEY": os.getenv("LLM_API_KEY", ""),
+            "LLM_ALLOW_REMOTE": os.getenv("LLM_ALLOW_REMOTE", "false"),
+            "LLM_TIMEOUT_SEC": os.getenv("LLM_TIMEOUT_SEC", "12"),
+            "LLM_MAX_TOKENS": os.getenv("LLM_MAX_TOKENS", "256"),
             "AI_API_TOKEN": os.getenv("AI_API_TOKEN", ""),
             "DECISION_MODEL_URL": os.getenv(
                 "DECISION_MODEL_URL", "http://127.0.0.1:8000/v1/decide"
