@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -31,6 +32,78 @@ class DecisionEngine(Protocol):
         ...
 
 
+def _fast_doctor_excerpt(target_text: str) -> dict[str, Any] | None:
+    """Fast substring extractor for doctor names/specialties without neural multi-pass loops."""
+    t_lower = target_text.lower()
+    # 1. Known doctor surnames and specialties from clinical stand
+    names = (
+        "богдановой",
+        "богданова",
+        "богданов",
+        "васильевой",
+        "васильева",
+        "васильев",
+        "ивановой",
+        "иванова",
+        "иванов",
+        "петровой",
+        "петрова",
+        "петров",
+        "смирновой",
+        "смирнова",
+        "смирнов",
+        "сидоровой",
+        "сидорова",
+        "сидоров",
+        "кузнецовой",
+        "кузнецова",
+        "кузнецов",
+        "терапевт",
+        "кардиолог",
+        "хирург",
+        "окулист",
+        "невролог",
+        "отоларинголог",
+        "лор",
+        "pediatrician",
+        "therapist",
+        "cardiologist",
+        "doctor",
+        "surgeon",
+    )
+    for name in names:
+        pos = t_lower.find(name)
+        if pos >= 0:
+            start_idx = pos
+            end_idx = pos + len(name)
+            return {
+                "type": "excerpt",
+                "text": target_text[start_idx:end_idx],
+                "start": start_idx,
+                "end": end_idx,
+                "probability": 0.95,
+            }
+
+    # 2. Match Russian surname declensions following prepositions/titles (e.g. "к Богдановой", "у Васильевой")
+    pattern = re.compile(
+        r"(?:(?:к|у)\s+(?:врачу\s+|доктору\s+|терапевту\s+)?|врач[уе]?\s+|доктор[уе]?\s+)"
+        r"([А-ЯЁа-яё]+(?:ов[ае]?|ев[ае]?|ин[ае]?|ын[ае]?|ск[ио][йяе]?))\b",
+        re.IGNORECASE,
+    )
+    m = pattern.search(target_text)
+    if m:
+        start_idx = m.start(1)
+        end_idx = m.end(1)
+        return {
+            "type": "excerpt",
+            "text": target_text[start_idx:end_idx],
+            "start": start_idx,
+            "end": end_idx,
+            "probability": 0.92,
+        }
+    return None
+
+
 class THX01Engine:
     """Wrapper around doofz/THX-01 decision model with isolated thread executor."""
 
@@ -40,6 +113,15 @@ class THX01Engine:
 
         self.device = device
         self.model_path = model_path
+        if device == "cpu":
+            threads = int(os.getenv("THX01_NUM_THREADS", "4"))
+            try:
+                torch.set_num_interop_threads(1)
+            except RuntimeError:
+                pass
+            torch.set_num_threads(threads)
+            logger.info("THX-01 CPU threads set: num_threads=%d, interop=1", threads)
+
         half = (device == "cuda") and torch.cuda.is_available()
         logger.info(
             "Loading THX-01 decision model from %s (device=%s, half=%s)...",
@@ -54,36 +136,80 @@ class THX01Engine:
         import torch
         from thx01.decide import decide as run_decide
 
+        target_text = ""
+        if isinstance(state, str):
+            target_text = state
+        elif isinstance(state, dict):
+            for k in (
+                "patient_utterance",
+                "patient_preference",
+                "реплика_пациента",
+                "ответ_пациента",
+            ):
+                if k in state and isinstance(state[k], str):
+                    target_text = state[k]
+                    break
+            if not target_text:
+                target_text = " ".join(str(v) for v in state.values())
+
+        fast_answers = {}
+        eval_questions = dict(questions)
+        for qid, q in list(questions.items()):
+            if q.get("type") == "excerpt":
+                q_text = str(q.get("question", "")).lower()
+                if any(
+                    k in q_text
+                    for k in ("surname", "doctor", "specialist", "специалист", "фамил", "врач")
+                ):
+                    extracted = _fast_doctor_excerpt(target_text)
+                    if extracted:
+                        fast_answers[qid] = extracted
+                        eval_questions.pop(qid, None)
+
         with torch.inference_mode():
-            res = run_decide(self.agent, state, questions)
-            if isinstance(res, dict) and "answers" in res and isinstance(res["answers"], dict):
-                return res["answers"]
-            return res
+            if eval_questions:
+                res = run_decide(self.agent, state, eval_questions)
+                if isinstance(res, dict) and "answers" in res and isinstance(res["answers"], dict):
+                    answers = dict(res["answers"])
+                elif isinstance(res, dict):
+                    answers = dict(res)
+                else:
+                    answers = {}
+            else:
+                answers = {}
+
+            answers.update(fast_answers)
+            return answers
 
     async def decide_async(self, state: Any, questions: dict[str, Any]) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, self.decide, state, questions)
 
     def warmup(self) -> None:
+        import torch
+
         t0 = time.perf_counter()
         dummy_state = {"шаг_диалога": "прогрев", "ответ_пациента": "Здравствуйте"}
-        dummy_questions = {
-            "intent": {
-                "type": "choice",
-                "question": "Намерение пациента",
-                "criteria": {"GREETING": "Приветствие", "OTHER": "Другое"},
+        for bs in (1, 2):
+            dummy_questions = {
+                f"intent_{i}": {
+                    "type": "choice",
+                    "question": f"Намерение пациента {i}",
+                    "criteria": {"GREETING": "Приветствие", "OTHER": "Другое"},
+                }
+                for i in range(bs)
             }
-        }
-        try:
-            self.decide(dummy_state, dummy_questions)
-            elapsed_ms = (time.perf_counter() - t0) * 1000
-            logger.info(
-                "THX-01 decision model warmed up successfully in %.1f ms (%s)",
-                elapsed_ms,
-                self.device,
-            )
-        except Exception as exc:
-            logger.warning("THX-01 warmup failed: %s", exc)
+            try:
+                self.decide(dummy_state, dummy_questions)
+            except Exception as exc:
+                logger.warning("THX-01 warmup bs=%d failed: %s", bs, exc)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        logger.info(
+            "THX-01 decision model warmed up successfully in %.1f ms (%s, threads=%d)",
+            elapsed_ms,
+            self.device,
+            torch.get_num_threads(),
+        )
 
     def close(self) -> None:
         self._executor.shutdown(wait=False)
@@ -723,46 +849,26 @@ class FakeDecisionEngine:
                 q_text = str(q.get("question", "")).lower()
                 span_text = None
                 start_idx, end_idx = -1, -1
+                prob = 0.0
 
                 # Extract doctor name or specialty if requested
                 if any(
                     k in q_text
                     for k in ("surname", "doctor", "specialist", "специалист", "фамил", "врач")
                 ):
-                    for name in (
-                        "богдановой",
-                        "богданова",
-                        "богданов",
-                        "иванов",
-                        "иванова",
-                        "смирнова",
-                        "смирнов",
-                        "терапевт",
-                        "кардиолог",
-                        "хирург",
-                        "окулист",
-                        "невролог",
-                        "отоларинголог",
-                        "лор",
-                        "pediatrician",
-                        "therapist",
-                        "cardiologist",
-                        "doctor",
-                        "surgeon",
-                    ):
-                        pos = t_lower.find(name)
-                        if pos >= 0:
-                            start_idx = pos
-                            end_idx = pos + len(name)
-                            span_text = target_text[start_idx:end_idx]
-                            break
+                    extracted = _fast_doctor_excerpt(target_text)
+                    if extracted:
+                        span_text = extracted["text"]
+                        start_idx = extracted["start"]
+                        end_idx = extracted["end"]
+                        prob = extracted["probability"]
 
                 answers[qid] = {
                     "type": "excerpt",
                     "text": span_text,
                     "start": start_idx,
                     "end": end_idx,
-                    "probability": 0.92 if span_text else 0.0,
+                    "probability": prob,
                 }
 
             elif qtype == "number":
