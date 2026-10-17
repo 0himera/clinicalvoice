@@ -36,31 +36,31 @@
 
 ```mermaid
 flowchart LR
-    Caller([ Пациент / Софтфон ]) <-->|SIP / RTP (G.711)| Asterisk[ Asterisk 20 PBX ]
-    Asterisk <-->|FastAGI :4573 / AudioSocket :9092| Worker[" ai-worker (Python 3.12) "]
+    Caller(["Пациент / Софтфон"]) <-->|"SIP / RTP (G.711)"| Asterisk["Asterisk 20 PBX"]
+    Asterisk <-->|"FastAGI :4573 / AudioSocket :9092"| Worker["ai-worker (Python 3.12)"]
     
-    subgraph AudioEngine[" ai-worker: Речевой транспорт "]
-        VAD[" Silero VAD (640ms reset) "]
-        ASR[" Faster-Whisper ASR "]
-        TTS[" Silero TTS (8 kHz PCM16) "]
-        BargeIn[" Barge-in Controller "]
+    subgraph AudioEngine["ai-worker: Речевой транспорт"]
+        VAD["Silero VAD (640ms reset)"]
+        ASR["Faster-Whisper ASR"]
+        TTS["Silero TTS (8 kHz PCM16)"]
+        BargeIn["Barge-in Controller"]
     end
 
-    Worker <-->|HTTP /turn & /interrupt| Core[" go-core :8080 "]
+    Worker <-->|"HTTP /turn & /interrupt"| Core["go-core :8080"]
 
-    subgraph GoEngine[" go-core: Диалоговое ядро "]
-        SafetyGate{" Safety Fast-Gate "}
-        ParserNLU[" Rule-based NLU / Stemmer "]
-        FSM[" FSM Controller "]
-        SlotMgr[" SlotManager (Held/Pending/Booked) "]
-        Campaign[" Reminder Campaign Engine "]
-        Escalation[" Escalations Outbox "]
+    subgraph GoEngine["go-core: Диалоговое ядро"]
+        SafetyGate{"Safety Fast-Gate"}
+        ParserNLU["Rule-based NLU / Stemmer"]
+        FSM["FSM Controller"]
+        SlotMgr["SlotManager (Held/Pending/Booked)"]
+        Campaign["Reminder Campaign Engine"]
+        Escalation["Escalations Outbox"]
     end
 
-    ParserNLU -.->|"Неоднозначный интент"| LLM[" Fallback NLU (Ollama / Gemini) "]
-    Core --> DB[( SQLite: WAL / Контакты / Outbox )]
-    SlotMgr <-->|HTTPS REST API (GMT+4)| MIS[ МИС Клиники / Mock ]
-    Core -->|AMI: Originate & Redirect| Asterisk
+    ParserNLU -.->|"Неоднозначный интент"| LLM["Fallback NLU (Ollama / Gemini)"]
+    Core --> DB[("SQLite: WAL / Контакты / Outbox")]
+    SlotMgr <-->|"HTTPS REST API (GMT+4)"| MIS["МИС Клиники / Mock"]
+    Core -->|"AMI: Originate & Redirect"| Asterisk
 ```
 
 ---
