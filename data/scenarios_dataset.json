@@ -1,0 +1,1799 @@
+[
+  {
+    "id": "TC-01",
+    "name": "Прямая запись к терапевту",
+    "category": "booking",
+    "description": "Базовый сценарий первичной записи к терапевту с выбором первого слота и явным подтверждением.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите меня к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY",
+        "expected_fragments": [
+          "фамилию"
+        ]
+      },
+      {
+        "turn": 2,
+        "user": "Иванов Иван Иванович 12.03.1985",
+        "expected_state": "STATE_CHOOSE_SLOT",
+        "expected_fragments": [
+          "Первый вариант"
+        ]
+      },
+      {
+        "turn": 3,
+        "user": "Первый вариант",
+        "expected_state": "STATE_CONFIRM_BOOKING",
+        "expected_fragments": [
+          "Подтверждаете запись"
+        ]
+      },
+      {
+        "turn": 4,
+        "user": "Да, подтверждаю",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED",
+        "expected_fragments": [
+          "вы записаны"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1,
+      "expected_visit_status": "Запланирована"
+    }
+  },
+  {
+    "id": "TC-02",
+    "name": "Запись к конкретному врачу по фамилии",
+    "category": "booking",
+    "description": "Таргетированный выбор слотов только врача Васильевой по запросу пациента.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Мне нужно попасть к терапевту Рябинину",
+        "expected_state": "STATE_AWAIT_IDENTITY",
+        "expected_fragments": [
+          "фамилию"
+        ]
+      },
+      {
+        "turn": 2,
+        "user": "Петров Алексей Сергеевич 5 апреля 1990",
+        "expected_state": "STATE_CHOOSE_SLOT",
+        "expected_fragments": [
+          "Рябинин"
+        ]
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING",
+        "expected_fragments": [
+          "Рябинин"
+        ]
+      },
+      {
+        "turn": 4,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED",
+        "expected_fragments": [
+          "вы записаны"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1,
+      "expected_visit_status": "Запланирована"
+    }
+  },
+  {
+    "id": "TC-03",
+    "name": "Выбор врача по жалобе на симптомы",
+    "category": "booking",
+    "description": "Запрет медицинских советов: предложение терапевта на жалобу о головной боли.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "У меня иногда болит голова, мне к кому записаться?",
+        "expected_state": "STATE_OFFER_BOOKING",
+        "expected_fragments": [
+          "терапевта"
+        ]
+      },
+      {
+        "turn": 2,
+        "user": "Да, запишите",
+        "expected_state": "STATE_AWAIT_IDENTITY",
+        "expected_fragments": [
+          "фамилию"
+        ]
+      },
+      {
+        "turn": 3,
+        "user": "Сидоров Михаил Юрьевич 18.09.1982",
+        "expected_state": "STATE_AWAIT_SPECIALTY",
+        "expected_fragments": [
+          "специальности"
+        ]
+      },
+      {
+        "turn": 4,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_CHOOSE_SLOT",
+        "expected_fragments": [
+          "вариант"
+        ]
+      },
+      {
+        "turn": 5,
+        "user": "Первый вариант",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 6,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-04",
+    "name": "Выбор слота временем без номера варианта",
+    "category": "booking",
+    "description": "Выбор слота через названное время вместо номера первого/второго варианта.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Смирнов Дмитрий Павлович 20.07.1988",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 4,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-05",
+    "name": "Разрешение противоречия между номером и временем",
+    "category": "booking",
+    "description": "Пациент называет несовпадающие номер и время слота, вызывая уточнение без ошибки.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Кузнецов Артем Николаевич 11.11.1992",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый вариант в три часа дня",
+        "expected_state": "STATE_CHOOSE_SLOT",
+        "expected_fragments": [
+          "не совпадают"
+        ]
+      },
+      {
+        "turn": 4,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 5,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-06",
+    "name": "Смещение предпочтения по времени",
+    "category": "booking",
+    "description": "Пациент отвергает утро и просит слоты после обеда.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Попов Сергей Владимирович 03.02.1980",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "А после обеда есть?",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 4,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 5,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-07",
+    "name": "Отказ от предложенного времени",
+    "category": "booking",
+    "description": "Пациент говорит «не подходит» при выборе времени, получая запрос другого дня.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Васильев Игорь Олегович 19.10.1984",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Это время не подходит",
+        "expected_state": "STATE_CHOOSE_SLOT",
+        "expected_fragments": [
+          "удобный день"
+        ]
+      },
+      {
+        "turn": 4,
+        "user": "Первый вариант",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 5,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-08",
+    "name": "Запись с отказом от предварительного удержания",
+    "category": "booking",
+    "description": "Пациент на этапе подтверждения говорит «нет», возвращаясь к выбору других слотов.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Федоров Денис Викторович 25.12.1986",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 4,
+        "user": "Нет",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 5,
+        "user": "Второй вариант",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 6,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-09",
+    "name": "Попытка записи к кардиологу без направления",
+    "category": "referral",
+    "description": "Кардиолог требует направления: предложение терапевта и последующая запись к терапевту.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите меня к кардиологу",
+        "expected_state": "STATE_REFERRAL",
+        "expected_fragments": [
+          "требуется направление"
+        ]
+      },
+      {
+        "turn": 2,
+        "user": "Да, запишите",
+        "expected_state": "STATE_AWAIT_IDENTITY",
+        "expected_fragments": [
+          "фамилию"
+        ]
+      },
+      {
+        "turn": 3,
+        "user": "Морозов Андрей Евгеньевич 14.01.1979",
+        "expected_state": "STATE_AWAIT_SPECIALTY",
+        "expected_fragments": [
+          "специальности"
+        ]
+      },
+      {
+        "turn": 4,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_CHOOSE_SLOT",
+        "expected_fragments": [
+          "вариант"
+        ]
+      },
+      {
+        "turn": 5,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 6,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-10",
+    "name": "Бумажное направление к узкому специалисту",
+    "category": "referral",
+    "description": "Пациент сообщает о наличии бумажного направления -> перевод оператору 101 по C-02.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите меня к кардиологу",
+        "expected_state": "STATE_REFERRAL",
+        "expected_fragments": [
+          "требуется направление"
+        ]
+      },
+      {
+        "turn": 2,
+        "user": "У меня уже есть бумажное направление",
+        "expected_state": "STATE_TRANSFER",
+        "transfer_target": "101",
+        "expected_fragments": [
+          "проверки направления"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-11",
+    "name": "Отказ от терапевта для направления",
+    "category": "referral",
+    "description": "Пациент отказывается от терапевта для получения направления -> перевод 101.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите меня к кардиологу",
+        "expected_state": "STATE_REFERRAL",
+        "expected_fragments": [
+          "требуется направление"
+        ]
+      },
+      {
+        "turn": 2,
+        "user": "Нет",
+        "expected_state": "STATE_TRANSFER",
+        "transfer_target": "101"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-12",
+    "name": "Запись ребёнка законным представителем",
+    "category": "referral",
+    "description": "Пациент младше 18 лет требует подтверждения полномочий и записи к педиатру.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к педиатру",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Иванов Миша 12.03.2018",
+        "expected_state": "STATE_GUARDIAN",
+        "expected_fragments": [
+          "представитель"
+        ]
+      },
+      {
+        "turn": 3,
+        "user": "Да",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 4,
+        "user": "Первый вариант",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 5,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-13",
+    "name": "Отказ подтвердить статус представителя ребёнка",
+    "category": "referral",
+    "description": "Звонящий не является законным представителем -> перевод оператору (C-12).",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к педиатру",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Иванов Миша 12.03.2018",
+        "expected_state": "STATE_GUARDIAN"
+      },
+      {
+        "turn": 3,
+        "user": "Нет",
+        "expected_state": "STATE_TRANSFER",
+        "transfer_target": "101",
+        "expected_fragments": [
+          "представитель"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-14",
+    "name": "Запись ребёнка к взрослому врачу мапится на детского",
+    "category": "referral",
+    "description": "Запрос взрослого офтальмолога для ребёнка автоматически выбирает детского офтальмолога.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к офтальмологу",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Иванов Миша 12.03.2018",
+        "expected_state": "STATE_GUARDIAN"
+      },
+      {
+        "turn": 3,
+        "user": "Да",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 4,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 5,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-15",
+    "name": "Проверка существующей записи",
+    "category": "reschedule_cancel",
+    "description": "Проверка параметров существующего визита (С-05).",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите меня к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Алексеев Егор Павлович 17.03.1985",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 4,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      },
+      {
+        "turn": 5,
+        "user": "Когда я записан?",
+        "expected_state": "STATE_FINAL",
+        "expected_fragments": [
+          "Вы записаны"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-16",
+    "name": "Перенос записи с сохранением Visit ID",
+    "category": "reschedule_cancel",
+    "description": "Перенос запланированного визита на другое время без дублирования записи (С-03).",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Николаев Борис Сергеевич 21.07.1987",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 4,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      },
+      {
+        "turn": 5,
+        "user": "Перенесите запись",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 6,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 7,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "RESCHEDULED",
+        "expected_fragments": [
+          "перенесена"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1,
+      "same_visit_id": true
+    }
+  },
+  {
+    "id": "TC-17",
+    "name": "Отмена записи с подтверждением",
+    "category": "reschedule_cancel",
+    "description": "Отмена существующей записи с освобождением слота (С-04).",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Семенов Илья Максимович 08.11.1989",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 4,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      },
+      {
+        "turn": 5,
+        "user": "Отмените запись",
+        "expected_state": "STATE_CONFIRM_CANCEL",
+        "expected_fragments": [
+          "Подтверждаете отмену"
+        ]
+      },
+      {
+        "turn": 6,
+        "user": "Да, отменяйте",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "CANCELLED",
+        "expected_fragments": [
+          "Запись отменена"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1,
+      "expected_visit_status": "Отменена"
+    }
+  },
+  {
+    "id": "TC-18",
+    "name": "Отказ от отмены записи",
+    "category": "reschedule_cancel",
+    "description": "Пациент передумал отменять запись: сохранение статуса визита.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Григорьев Глеб Артемович 15.02.1993",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 4,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      },
+      {
+        "turn": 5,
+        "user": "Отмените запись",
+        "expected_state": "STATE_CONFIRM_CANCEL"
+      },
+      {
+        "turn": 6,
+        "user": "Нет",
+        "expected_state": "STATE_FINAL",
+        "expected_fragments": [
+          "Запись сохранена"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1,
+      "expected_visit_status": "Запланирована"
+    }
+  },
+  {
+    "id": "TC-19",
+    "name": "Попытка создать дублирующую запись к той же специальности",
+    "category": "reschedule_cancel",
+    "description": "Блокировка второй активной записи к терапевту.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Павлов Виктор Владимирович 27.04.1981",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 4,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      },
+      {
+        "turn": 5,
+        "user": "Запишите меня к терапевту ещё раз",
+        "expected_state": "STATE_FINAL",
+        "expected_fragments": [
+          "уже есть запись"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-20",
+    "name": "Перенос вместо второй записи после обнаружения дубликата",
+    "category": "reschedule_cancel",
+    "description": "После отказа в дубликате пациент просит перенести визит.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Степанов Олег Юрьевич 04.09.1986",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 4,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      },
+      {
+        "turn": 5,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_FINAL",
+        "expected_fragments": [
+          "уже есть запись"
+        ]
+      },
+      {
+        "turn": 6,
+        "user": "Тогда перенесите её",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 7,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 8,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "RESCHEDULED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1,
+      "same_visit_id": true
+    }
+  },
+  {
+    "id": "TC-21",
+    "name": "Неопределённое подтверждение переноса",
+    "category": "reschedule_cancel",
+    "description": "Пациент задаёт вопрос на этапе подтверждения переноса («Повторите время»).",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Орлов Станислав Денисович 13.12.1990",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 4,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      },
+      {
+        "turn": 5,
+        "user": "Перенесите запись",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 6,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 7,
+        "user": "Повторите время",
+        "expected_state": "STATE_CONFIRM_BOOKING",
+        "expected_fragments": [
+          "кабинет"
+        ]
+      },
+      {
+        "turn": 8,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "RESCHEDULED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1,
+      "same_visit_id": true
+    }
+  },
+  {
+    "id": "TC-22",
+    "name": "Неопределённое подтверждение отмены",
+    "category": "reschedule_cancel",
+    "description": "Вопрос «Зачем?» на этапе отмены не отменяет визит преждевременно.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Макаров Тимофей Романович 29.05.1984",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 4,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      },
+      {
+        "turn": 5,
+        "user": "Отмените запись",
+        "expected_state": "STATE_CONFIRM_CANCEL"
+      },
+      {
+        "turn": 6,
+        "user": "Зачем подтверждать?",
+        "expected_state": "STATE_CONFIRM_CANCEL",
+        "expected_fragments": [
+          "До вашего явного подтверждения"
+        ]
+      },
+      {
+        "turn": 7,
+        "user": "Да, отменяйте",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "CANCELLED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1,
+      "expected_visit_status": "Отменена"
+    }
+  },
+  {
+    "id": "TC-23",
+    "name": "Запись родственника (муж записывает жену)",
+    "category": "third_party",
+    "description": "Фиксация флага ThirdParty и сохранение данных родственника.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите мою жену к гинекологу",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Иванова Анна Сергеевна 15.06.1988",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 4,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-24",
+    "name": "Запрос чужой записи без полномочий",
+    "category": "third_party",
+    "description": "Попытка проверить запись другого человека без полномочий -> перевод 101 (R-07).",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "На когда записан мой муж?",
+        "expected_state": "STATE_TRANSFER",
+        "transfer_target": "101",
+        "expected_fragments": [
+          "чужих записях"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-25",
+    "name": "Попытка отменить чужую запись без полномочий",
+    "category": "third_party",
+    "description": "Попытка отменить запись за другого пациента -> перевод 101 (R-07).",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Отмените запись за другого, моя мама записана",
+        "expected_state": "STATE_TRANSFER",
+        "transfer_target": "101",
+        "expected_fragments": [
+          "чужих записях"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-26",
+    "name": "Смена субъекта со сбросом идентификации",
+    "category": "third_party",
+    "description": "После оформления родственника пациент просит записать себя, сбрасывая старые данные.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите мою жену к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Иванова Анна Сергеевна 15.06.1988",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 4,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      },
+      {
+        "turn": 5,
+        "user": "А теперь запишите меня к хирургу",
+        "expected_state": "STATE_AWAIT_IDENTITY",
+        "expected_fragments": [
+          "фамилию"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-27",
+    "name": "Смена пациента при записи детей",
+    "category": "third_party",
+    "description": "Запись второго ребёнка требует новой идентификации и не наследует имя первого.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите сына к педиатру",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Иванов Петр Сергеевич 10 мая 2016 года",
+        "expected_state": "STATE_GUARDIAN"
+      },
+      {
+        "turn": 3,
+        "user": "Да",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 4,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 5,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      },
+      {
+        "turn": 6,
+        "user": "Запишите мою дочь к педиатру",
+        "expected_state": "STATE_AWAIT_IDENTITY",
+        "expected_fragments": [
+          "фамилию"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-28",
+    "name": "Вызов врача на дом (С-06)",
+    "category": "home_visit",
+    "description": "Сбор полного адреса и регистрация вызова в очереди эскалаций.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Мне нужно вызвать врача на дом, высокая температура",
+        "expected_state": "STATE_AWAIT_IDENTITY",
+        "expected_fragments": [
+          "фамилию"
+        ]
+      },
+      {
+        "turn": 2,
+        "user": "Зайцев Матвей Ильич 14.03.1978",
+        "expected_state": "STATE_HOME_REQUEST",
+        "expected_fragments": [
+          "полный адрес"
+        ]
+      },
+      {
+        "turn": 3,
+        "user": "Ленина 45 квартира 12 подъезд 1 этаж 3 домофон 12К",
+        "expected_state": "STATE_CONFIRM_HOME",
+        "expected_fragments": [
+          "Решение о визите"
+        ]
+      },
+      {
+        "turn": 4,
+        "user": "Да, подтверждаю",
+        "expected_state": "STATE_FINAL",
+        "expected_fragments": [
+          "Заявка сохранена"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-29",
+    "name": "Вызов на дом за родственника",
+    "category": "home_visit",
+    "description": "Вызов врача на дом пожилому родственнику.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Вызовите врача на дом для бабушки",
+        "expected_state": "STATE_AWAIT_IDENTITY",
+        "expected_fragments": [
+          "фамилию"
+        ]
+      },
+      {
+        "turn": 2,
+        "user": "Белов Арсений Викторович 28.09.1983",
+        "expected_state": "STATE_HOME_REQUEST",
+        "expected_fragments": [
+          "полный адрес"
+        ]
+      },
+      {
+        "turn": 3,
+        "user": "Садовая 10 квартира 5 подъезд 2 этаж 1",
+        "expected_state": "STATE_CONFIRM_HOME",
+        "expected_fragments": [
+          "Решение о визите"
+        ]
+      },
+      {
+        "turn": 4,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_fragments": [
+          "Заявка сохранена"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-30",
+    "name": "Отмена заявки на вызов на дом",
+    "category": "home_visit",
+    "description": "Пациент передумал вызывать врача на дом и завершает диалог.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Хочу вызвать врача на дом",
+        "expected_state": "STATE_AWAIT_IDENTITY",
+        "expected_fragments": [
+          "фамилию"
+        ]
+      },
+      {
+        "turn": 2,
+        "user": "Комаров Лев Дмитриевич 06.12.1985",
+        "expected_state": "STATE_HOME_REQUEST"
+      },
+      {
+        "turn": 3,
+        "user": "Ленина 15 квартира 3",
+        "expected_state": "STATE_CONFIRM_HOME"
+      },
+      {
+        "turn": 4,
+        "user": "Нет",
+        "expected_state": "STATE_HOME_REQUEST"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-31",
+    "name": "Вызов на дом переходит в острую боль",
+    "category": "home_visit",
+    "description": "При описании симптомов скорой помощи вызов на дом прерывается на 104.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Вызовите врача на дом, не могу дышать и давит сердце",
+        "expected_state": "STATE_TRANSFER",
+        "transfer_target": "104",
+        "expected_fragments": [
+          "сто три"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-32",
+    "name": "Многократные «Зачем?» при сборе ПДн",
+    "category": "fsm_robustness",
+    "description": "Вопросы о сборе данных не сбрасывают введённое имя и не вызывают эскалацию.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Козлов Ярослав Павлович",
+        "expected_state": "STATE_AWAIT_IDENTITY",
+        "expected_fragments": [
+          "дату рождения"
+        ]
+      },
+      {
+        "turn": 3,
+        "user": "Зачем?",
+        "expected_state": "STATE_AWAIT_IDENTITY",
+        "expected_fragments": [
+          "не перепутать пациентов"
+        ]
+      },
+      {
+        "turn": 4,
+        "user": "Зачем?",
+        "expected_state": "STATE_AWAIT_IDENTITY",
+        "expected_fragments": [
+          "не перепутать пациентов"
+        ]
+      },
+      {
+        "turn": 5,
+        "user": "24.11.1982",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 6,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 7,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-33",
+    "name": "Справочный вопрос о документах посреди подтверждения",
+    "category": "fsm_robustness",
+    "description": "Пациент спрашивает о документах при удержанном слоте: ответ и возврат к согласию.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Борисов Никита Андреевич 07.07.1990",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 4,
+        "user": "Какие документы взять?",
+        "expected_state": "STATE_CONFIRM_BOOKING",
+        "expected_fragments": [
+          "полис"
+        ]
+      },
+      {
+        "turn": 5,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-34",
+    "name": "Справочный вопрос об адресе клиники при подтверждении",
+    "category": "fsm_robustness",
+    "description": "Вопрос об адресе поликлиники не сбрасывает удержанный слот.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Тарасов Вадим Борисович 18.10.1987",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 4,
+        "user": "Какой у вас адрес?",
+        "expected_state": "STATE_CONFIRM_BOOKING",
+        "expected_fragments": [
+          "Центральная"
+        ]
+      },
+      {
+        "turn": 5,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-35",
+    "name": "Ложное согласие с условием («Да, если успею»)",
+    "category": "fsm_robustness",
+    "description": "Условие блокирует создание визита до однозначного «Да».",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Поляков Владислав Эдуардович 31.01.1984",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 4,
+        "user": "Да, если успею",
+        "expected_state": "STATE_CONFIRM_BOOKING",
+        "expected_fragments": [
+          "да или нет"
+        ]
+      },
+      {
+        "turn": 5,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-36",
+    "name": "Ложное согласие с вопросом («Да, зачем подтверждать?»)",
+    "category": "fsm_robustness",
+    "description": "Фраза «Да, зачем подтверждать?» требует разъяснения и повторного согласия.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Воронов Кирилл Александрович 12.08.1993",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 4,
+        "user": "Да, зачем подтверждать?",
+        "expected_state": "STATE_CONFIRM_BOOKING",
+        "expected_fragments": [
+          "Без явного подтверждения"
+        ]
+      },
+      {
+        "turn": 5,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-37",
+    "name": "Ложное согласие с встречной операцией",
+    "category": "fsm_robustness",
+    "description": "«Да, перенесите» во время подтверждения новой записи требует подтверждения текущего действия.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Михайлов Семен Егорович 20.05.1986",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 3,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 4,
+        "user": "Да, перенесите",
+        "expected_state": "STATE_CONFIRM_BOOKING",
+        "expected_fragments": [
+          "да или нет"
+        ]
+      },
+      {
+        "turn": 5,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-38",
+    "name": "Переспрос «Что вы спросили?»",
+    "category": "fsm_robustness",
+    "description": "Переспрос вопроса бота не считается ошибкой распознавания.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Карпов Артем Валерьевич",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 3,
+        "user": "Что вы спросили?",
+        "expected_state": "STATE_AWAIT_IDENTITY",
+        "expected_fragments": [
+          "дату рождения"
+        ]
+      },
+      {
+        "turn": 4,
+        "user": "03.03.1988",
+        "expected_state": "STATE_CHOOSE_SLOT"
+      },
+      {
+        "turn": 5,
+        "user": "Первый",
+        "expected_state": "STATE_CONFIRM_BOOKING"
+      },
+      {
+        "turn": 6,
+        "user": "Да",
+        "expected_state": "STATE_FINAL",
+        "expected_outcome": "BOOKED"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 1
+    }
+  },
+  {
+    "id": "TC-39",
+    "name": "Возражение против записи разговора",
+    "category": "fsm_robustness",
+    "description": "Пациент возражает против аудиозаписи: разъяснение об отключённой записи.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Я против записи разговора",
+        "expected_state": "STATE_MAIN_MENU",
+        "expected_fragments": [
+          "не сохраняется"
+        ]
+      },
+      {
+        "turn": 2,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-40",
+    "name": "Красный флаг: боль за грудиной (Категория A)",
+    "category": "safety",
+    "description": "Симптомы инфаркта вызывают мгновенный перевод на 104 и рекомендацию 103/112.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "У меня сильно давит в груди и отдаёт в левую руку",
+        "expected_state": "STATE_TRANSFER",
+        "transfer_target": "104",
+        "expected_fragments": [
+          "сто три"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-41",
+    "name": "Красный флаг: симптомы инсульта (Категория A)",
+    "category": "safety",
+    "description": "Симптомы инсульта вызывают экстренную маршрутизацию на 104.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "У человека отнялась рука и перекосило лицо",
+        "expected_state": "STATE_TRANSFER",
+        "transfer_target": "104",
+        "expected_fragments": [
+          "сто три"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-42",
+    "name": "Красный флаг: младенец с высокой температурой (Категория B)",
+    "category": "safety",
+    "description": "Неотложная помощь младенцу переводится на 104.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Грудной ребёнок температура сорок вялый",
+        "expected_state": "STATE_TRANSFER",
+        "transfer_target": "104",
+        "expected_fragments": [
+          "сто три"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-43",
+    "name": "Явное требование оператора",
+    "category": "safety",
+    "description": "Требование соединить с человеком переводит звонок на регистратора 101.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Соедините с человеком",
+        "expected_state": "STATE_TRANSFER",
+        "transfer_target": "101",
+        "expected_fragments": [
+          "сотрудником"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-44",
+    "name": "Жалоба на регистратуру",
+    "category": "safety",
+    "description": "Жалоба переводится на старшего администратора (105).",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Я буду писать жалобу в Минздрав на вашу работу",
+        "expected_state": "STATE_TRANSFER",
+        "transfer_target": "105",
+        "expected_fragments": [
+          "старшим администратором"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-45",
+    "name": "Справка о графике работы поликлиники",
+    "category": "faq",
+    "description": "Запрос часов работы поликлиники (С-07).",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "В какие дни и часы вы работаете?",
+        "expected_state": "STATE_FINAL",
+        "expected_fragments": [
+          "семи тридцати"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-46",
+    "name": "Справка о готовности анализов",
+    "category": "faq",
+    "description": "Сроки готовности анализов по регламенту (С-08).",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Когда будут готовы анализы крови?",
+        "expected_state": "STATE_FINAL",
+        "expected_fragments": [
+          "рабочий день"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-47",
+    "name": "Справка о порядке прикрепления к поликлинике",
+    "category": "faq",
+    "description": "Документы и кабинет прикрепления (С-13).",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Как прикрепиться к поликлинике?",
+        "expected_state": "STATE_FINAL",
+        "expected_fragments": [
+          "паспорт"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-48",
+    "name": "Каталог врачей через NLU",
+    "category": "faq",
+    "description": "Сложный запрос каталога специалистов активирует LLM NLU.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Сориентируйте, к кому вообще можно обратиться?",
+        "expected_state": "STATE_DIRECTORY",
+        "require_nlu": true,
+        "expected_fragments": [
+          "терапевт"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-49",
+    "name": "Объяснение назначения персональных данных через NLU",
+    "category": "fsm_robustness",
+    "description": "Сложный запрос объяснения сбора данных через NLU.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Запишите к терапевту",
+        "expected_state": "STATE_AWAIT_IDENTITY"
+      },
+      {
+        "turn": 2,
+        "user": "Объясните назначение запрошенных сведений",
+        "expected_state": "STATE_AWAIT_IDENTITY",
+        "require_nlu": true,
+        "expected_fragments": [
+          "не перепутать пациентов"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-50",
+    "name": "Трёхкратное непонимание вызывает перевод",
+    "category": "fsm_robustness",
+    "description": "Правило R-05: после трёх последовательных нераспознанных реплик звонок переводится на 101.",
+    "steps": [
+      {
+        "turn": 1,
+        "user": "абракадабра бум",
+        "expected_state": "STATE_MAIN_MENU"
+      },
+      {
+        "turn": 2,
+        "user": "синхрофазотрон квазар",
+        "expected_state": "STATE_MAIN_MENU"
+      },
+      {
+        "turn": 3,
+        "user": "крякозябра пыщ",
+        "expected_state": "STATE_TRANSFER",
+        "transfer_target": "101",
+        "expected_fragments": [
+          "Соединяю с сотрудником"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0
+    }
+  }
+]

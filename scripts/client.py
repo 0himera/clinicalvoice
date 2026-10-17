@@ -49,8 +49,13 @@ class VoiceClient:
         response.raise_for_status()
         return response
 
-    def start(self) -> dict:
-        result = self.checked(self.core.post("/api/dialogue/start", json={})).json()
+    def start(self, caller_number: str = "", outbound_visit_id: int = 0) -> dict:
+        payload = {}
+        if caller_number:
+            payload["caller_number"] = caller_number
+        if outbound_visit_id:
+            payload["outbound_visit_id"] = outbound_visit_id
+        result = self.checked(self.core.post("/api/dialogue/start", json=payload)).json()
         self.call_id = result["call_id"]
         return result
 
@@ -86,10 +91,20 @@ class VoiceClient:
     def visits(self) -> list:
         return self.checked(self.core.get("/api/visits")).json() or []
 
+    def end_call(self):
+        if self.call_id:
+            try:
+                self.core.post(f"/api/dialogue/{self.call_id}/end")
+            except Exception:
+                pass
+            self.call_id = ""
+
     def close(self):
         try:
             if self.call_id:
-                self.core.post(f"/api/dialogue/{self.call_id}/end").raise_for_status()
+                self.core.post(f"/api/dialogue/{self.call_id}/end")
+        except Exception:
+            pass
         finally:
             self.core.close()
             self.ai.close()

@@ -1,7 +1,7 @@
-.PHONY: help setup install build run-core run-ai docker-up docker-down test test-unit test-python lint check voice smoke clean
+.PHONY: help setup install build run-core run-ai docker-up docker-down test test-unit test-python lint check scenarios scenarios-voice sim sim-live voice smoke logs transcripts retention-timer clean
 
 help:
-	@echo "setup install build docker-up run-core run-ai test lint check voice smoke"
+	@echo "setup install build docker-up run-core run-ai test lint check scenarios scenarios-voice sim sim-live voice smoke logs transcripts retention-timer"
 
 setup:
 	python3 scripts/setup.py
@@ -12,6 +12,16 @@ install:
 build:
 	cd go-core && go build -trimpath -o bin/server ./cmd/server
 	cd go-core && go build -trimpath -o bin/cli-test ./cmd/cli-test
+	cd go-core && go build -trimpath -o bin/transcripts ./cmd/transcripts
+
+logs:
+	tail -n 60 var/log/core-events.jsonl var/log/speech-events.jsonl
+
+transcripts:
+	./go-core/bin/transcripts -last 50
+
+retention-timer: build
+	python3 scripts/install_transcript_retention.py
 
 run-core: build
 	./go-core/bin/server
@@ -46,5 +56,22 @@ voice:
 smoke:
 	cd ai-worker && uv run --inexact --locked --extra models python ../scripts/test_voice_simulation.py
 
+scenarios:
+	cd ai-worker && uv run --inexact --locked --group dev python ../scripts/run_scenarios.py
+
+scenarios-voice:
+	cd ai-worker && uv run --inexact --locked --extra models python ../scripts/run_scenarios.py --voice
+
+sim:
+	cd ai-worker && uv run --inexact --locked --group dev python ../scripts/user_sim.py --backend ollama --no-voice
+
+sim-live:
+	cd ai-worker && uv run --inexact --locked --extra models python ../scripts/user_sim.py --backend gemini-live
+
+sim-live-1h:
+	cd ai-worker && uv run --inexact --locked --extra models python ../scripts/user_sim.py --backend gemini-live --duration-min 60
+
 clean:
 	rm -rf go-core/bin
+
+

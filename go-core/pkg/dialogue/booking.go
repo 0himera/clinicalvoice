@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -70,14 +69,24 @@ func optionIndex(text string, n int) int {
 		return 0
 	}
 	index := -1
-	for i, prefix := range []string{"перв", "втор", "трет"} {
-		for _, token := range wordsRE.FindAllString(s, -1) {
-			if i < n && (strings.HasPrefix(token, prefix) || token == strconv.Itoa(i+1)) {
-				if index >= 0 && index != i {
-					return -1
+	tokens := wordsRE.FindAllString(s, -1)
+	_, _, _, hasClock := requestedClock(text)
+	for pos, token := range tokens {
+		i, found := slotOrdinals[token]
+		if !found {
+			if value, valid := numberToken(token); valid && value >= 1 && value <= n {
+				markedOption := pos > 0 && (tokens[pos-1] == "вариант" || tokens[pos-1] == "номер")
+				clockContext := hasClock && !markedOption || pos > 0 && (tokens[pos-1] == "в" || tokens[pos-1] == "на") || pos+1 < len(tokens) && strings.HasPrefix(tokens[pos+1], "час")
+				if !clockContext {
+					i, found = value-1, true
 				}
-				index = i
 			}
+		}
+		if found && i < n {
+			if index >= 0 && index != i {
+				return -1
+			}
+			index = i
 		}
 	}
 	return index
@@ -86,18 +95,45 @@ func (f *FSMController) chooseSlot(ctx context.Context, s *models.CallSession, t
 	if informationQuestion(normalized(text)) {
 		return f.aside(s, "Для выбора назовите номер варианта или удобный день и время.")
 	}
+	if len(clockRE.FindAllStringSubmatch(text, -1)) > 1 || word(normalized(text), "или") {
+		result := f.aside(s, "Назовите один вариант: первый или второй, либо одно удобное время.")
+		result.DiagnosticCode = "slot_choice_ambiguous"
+		return result
+	}
 	index := optionIndex(text, len(s.Options))
-	if m := clockRE.FindStringSubmatch(text); len(m) == 3 {
-		h, _ := strconv.Atoi(m[1])
-		min, _ := strconv.Atoi(m[2])
+	h, minute, precise, hasClock := requestedClock(text)
+	if index < 0 && hasClock && (Confirmation(text) == IntentDeny || word(normalized(text), "не")) {
+		s.FailCount = 0
+		result := say(StateChooseSlot, "Назовите другое удобное время или номер подходящего варианта.")
+		result.DiagnosticCode = "slot_time_declined"
+		return result
+	}
+	if hasClock {
+		matches := []int{}
 		for i, o := range s.Options {
-			if o.StartTime.Hour() == h && o.StartTime.Minute() == min {
-				if index >= 0 && index != i {
-					index = -1
-					break
-				}
-				index = i
+			if o.StartTime.Hour() == h && (!precise || o.StartTime.Minute() == minute) {
+				matches = append(matches, i)
 			}
+		}
+		if index >= 0 {
+			consistent := false
+			for _, candidate := range matches {
+				consistent = consistent || candidate == index
+			}
+			if !consistent {
+				result := f.aside(s, "Номер варианта и названное время не совпадают. Выберите первый или второй вариант.")
+				result.DiagnosticCode = "slot_choice_conflict"
+				return result
+			}
+		} else if len(matches) == 1 {
+			index = matches[0]
+		} else if len(matches) > 1 {
+			result := f.aside(s, "Под это время подходят оба предложенных варианта. Скажите «первый» или «второй».")
+			result.DiagnosticCode = "slot_time_ambiguous"
+			return result
+		} else {
+			s.Preference = text
+			return f.offer(ctx, s)
 		}
 	}
 	if index < 0 || index >= len(s.Options) {
@@ -109,7 +145,9 @@ func (f *FSMController) chooseSlot(ctx context.Context, s *models.CallSession, t
 		if Confirmation(text) == IntentDeny {
 			return say(StateChooseSlot, "Назовите удобный день или время: например, завтра после обеда.")
 		}
-		return f.retry(ctx, s, "Выберите первый или второй вариант, либо назовите удобный день и время.")
+		result := f.retry(ctx, s, "Выберите первый или второй вариант, либо назовите удобный день и время.")
+		result.DiagnosticCode = "slot_choice_unrecognized"
+		return result
 	}
 	chosen := s.Options[index]
 	key, err := f.slotMgr.HoldSlot(chosen.DoctorID, chosen.StartTime, s.CallID, 2*time.Minute)

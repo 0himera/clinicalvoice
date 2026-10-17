@@ -20,7 +20,14 @@ async def test_audio_socket_reaches_dialogue_and_returns_audio(services, tmp_pat
         return httpx.Response(200, json={"status": "closed"})
 
     bridge = Bridge(
-        Settings(agi_port=0, audio_port=0, debug_dialogue=True, debug_log_dir=str(tmp_path)),
+        Settings(
+            agi_port=0,
+            audio_port=0,
+            debug_dialogue=True,
+            debug_log_dir=str(tmp_path),
+            technical_logs=True,
+            technical_log_dir=str(tmp_path),
+        ),
         services,
     )
     await bridge.http.aclose()
@@ -37,7 +44,7 @@ async def test_audio_socket_reaches_dialogue_and_returns_audio(services, tmp_pat
         kind, size = struct.unpack("!BH", await reader.readexactly(3))
         assert kind == 0x10
         await reader.readexactly(size)
-        writer.write(frame(0x10, b"\x01\x00" * 256 * 8))
+        writer.write(frame(0x10, struct.pack("<h", 32124) * 256 * 8))
         writer.write(frame(0x10, b"\x00" * 512 * 6))
         writer.write(frame(0x10, b"\x00" * 512 * 6))
         writer.write(frame(0x10, b"\x00" * 512 * 8))
@@ -61,6 +68,16 @@ async def test_audio_socket_reaches_dialogue_and_returns_audio(services, tmp_pat
     assert any(
         event["event"] == "bot_response" and event["bot_speech"] == "Готово" for event in events
     )
+    technical = (tmp_path / "speech-events.jsonl").read_text()
+    assert "Запишите к терапевту" not in technical and "Готово" not in technical
+    safe_asr = next(
+        json.loads(line)
+        for line in technical.splitlines()
+        if json.loads(line)["event"] == "asr_result"
+    )
+    assert safe_asr["rms_dbfs"] is not None
+    # G.711 saturation must be detected even when VAD retains silent padding.
+    assert 0 < safe_asr["clipped_percent"] < 100
 
 
 async def test_unknown_audio_socket_uuid_is_rejected(services):

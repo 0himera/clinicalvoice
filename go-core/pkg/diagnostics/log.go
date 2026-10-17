@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 )
 
 // File bounds a debug log to two files, each at most five MiB.
@@ -18,6 +19,9 @@ type File struct {
 }
 
 func Open(directory, name string) (*File, error) {
+	if name == "" || filepath.Base(name) != name {
+		return nil, errors.New("invalid log name")
+	}
 	if err := os.MkdirAll(directory, 0700); err != nil {
 		return nil, err
 	}
@@ -42,7 +46,7 @@ func (f *File) open() error {
 	if info, err := os.Lstat(f.path); err == nil && !info.Mode().IsRegular() {
 		return errors.New("debug log must be a regular file")
 	}
-	file, err := os.OpenFile(f.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	file, err := os.OpenFile(f.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
 		return err
 	}

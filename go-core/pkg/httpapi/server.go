@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/himera/tochka-voice/go-core/pkg/campaign"
+	"github.com/himera/tochka-voice/go-core/pkg/diagnostics"
 	"github.com/himera/tochka-voice/go-core/pkg/dialogue"
 	"github.com/himera/tochka-voice/go-core/pkg/misclient"
 	"github.com/himera/tochka-voice/go-core/pkg/models"
@@ -46,6 +47,7 @@ type Config struct {
 	Redirector  Redirector
 	Escalate    dialogue.EscalateFunc
 	Trace       *slog.Logger
+	Events      *slog.Logger
 }
 type Response struct {
 	dialogue.StepResult
@@ -69,6 +71,7 @@ type session struct {
 	interrupted atomic.Pointer[interruptResult]
 	closed      atomic.Bool
 	patientID   atomic.Int64
+	turns       int
 }
 type interruptResult struct {
 	result   dialogue.StepResult
@@ -202,6 +205,9 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Trace != nil {
 		s.cfg.Trace.Info("call_started", "call_id", call.CallID, "state", result.NextState, "bot_speech", result.BotSpeech)
 	}
+	if s.cfg.Events != nil {
+		s.cfg.Events.Info("call_started", "call_id", call.CallID, "state", result.NextState, "outbound", req.OutboundVisitID > 0)
+	}
 }
 func (s *Server) find(id string) *session { s.mu.Lock(); defer s.mu.Unlock(); return s.sessions[id] }
 func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
@@ -240,9 +246,12 @@ func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 		write(w, 200, c.response)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
+	requestContext := diagnostics.WithTranscript(diagnostics.WithCall(r.Context(), e.id), s.cfg.Trace)
+	ctx, cancel := context.WithTimeout(requestContext, 35*time.Second)
 	defer cancel()
 	previousState := e.call.CurrentState
+	optionsBefore := len(e.call.Options)
+	e.turns++
 	started := time.Now()
 	result := s.cfg.FSM.ProcessInput(ctx, e.call, req.Text)
 	patientID := int64(0)
@@ -286,6 +295,15 @@ func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 			"transfer_target", response.TransferTarget, "latency_ms", time.Since(started).Milliseconds(),
 			"nlu_attempted", e.call.NLUAttempted, "llm_used", response.LLMUsed, "nlu_intent", e.call.NLUIntent, "nlu_latency_ms", e.call.NLULatencyMS, "nlu_error", e.call.NLUError)
 	}
+	if s.cfg.Events != nil {
+		s.cfg.Events.Info("dialogue_turn", "call_id", e.id, "turn", e.turns,
+			"previous_state", previousState, "state", response.NextState, "scenario", response.Scenario,
+			"input_chars", len([]rune(req.Text)), "confirmation", dialogue.Confirmation(req.Text), "options_before", optionsBefore,
+			"fail_count", e.call.FailCount, "input_issue", result.DiagnosticCode,
+			"outcome", response.Outcome, "reason_code", response.ReasonCode, "transfer_target", response.TransferTarget,
+			"latency_ms", time.Since(started).Milliseconds(), "nlu_attempted", e.call.NLUAttempted,
+			"llm_used", response.LLMUsed, "nlu_intent", e.call.NLUIntent, "nlu_latency_ms", e.call.NLULatencyMS, "nlu_error", e.call.NLUError)
+	}
 	write(w, 200, response)
 }
 func (s *Server) end(w http.ResponseWriter, r *http.Request) {
@@ -303,6 +321,9 @@ func (s *Server) end(w http.ResponseWriter, r *http.Request) {
 	e.call.CurrentState = dialogue.StateDone
 	e.closed.Store(true)
 	e.call.LastActivityAt = time.Now()
+	if s.cfg.Events != nil {
+		s.cfg.Events.Info("call_ended", "call_id", e.id, "turns", e.turns)
+	}
 	write(w, 200, map[string]string{"status": "closed"})
 }
 
@@ -358,6 +379,9 @@ func (s *Server) interrupt(w http.ResponseWriter, r *http.Request) {
 	if e == nil {
 		problem(w, 404, "unknown call")
 		return
+	}
+	if s.cfg.Trace != nil {
+		s.cfg.Trace.Info("asr_observed", "call_id", e.id, "text", req.Text)
 	}
 	if e.closed.Load() {
 		problem(w, 410, "call is closed")

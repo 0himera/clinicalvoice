@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from src.diagnostics import DialogueTrace
+from src.diagnostics import CallDiagnostics, DialogueTrace
 from src.settings import Settings
 
 
@@ -34,3 +34,33 @@ def test_private_jsonl_trace_escapes_newlines_and_rotates(tmp_path):
         assert len(entries) == 1
         assert entries[0]["event"] == "asr_result"
         assert "\n" in entries[0]["text"]
+
+
+def test_technical_trace_drops_text_headers_paths_and_invalid_codes(tmp_path):
+    import uuid
+
+    settings = Settings(technical_logs=True, technical_log_dir=str(tmp_path))
+    trace = CallDiagnostics(settings)
+    call_id = str(uuid.uuid4())
+    trace(
+        "asr_result",
+        call_id=call_id,
+        text="Иванов 12.03.1985",
+        bot_speech="private reply",
+        headers={"Authorization": "private-token"},
+        path="/patient/Ivanov",
+        state="Ivanov",
+        latency_ms=22,
+        rms_dbfs=-31.4,
+        peak_percent=24.1,
+        clipped_percent=0.0,
+        text_chars=18,
+    )
+    trace.close()
+    contents = (tmp_path / "speech-events.jsonl").read_text()
+    for secret in ("Иванов", "1985", "private", "Ivanov", "Authorization"):
+        assert secret not in contents
+    event = json.loads(contents)
+    assert event["call_id"] == call_id and event["rms_dbfs"] == -31.4
+    assert event["latency_ms"] == 22 and event["text_chars"] == 18
+    assert not (tmp_path / "speech.jsonl").exists()

@@ -46,6 +46,36 @@ func TestDebugTraceExplainsMisunderstandings(t *testing.T) {
 	}
 }
 
+func TestTechnicalEventsExplainFailuresWithoutPatientTextOrSecrets(t *testing.T) {
+	api, _ := testAPI(t, "")
+	var output bytes.Buffer
+	api.cfg.Events = slog.New(slog.NewJSONHandler(&output, nil))
+	w := request(t, api, "POST", "/api/dialogue/start", map[string]string{"caller_number": "secret-number", "channel_id": "private-channel"}, "")
+	var call Response
+	if err := json.Unmarshal(w.Body.Bytes(), &call); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Запишите к терапевту", "Иванов Иван Иванович 12.03.1985", "неизвестная реплика", "снова неизвестно", "непонятный ответ"} {
+		w = request(t, api, "POST", "/api/dialogue/turn", map[string]string{"call_id": call.CallID, "turn_id": "secret-" + text, "text": text}, "")
+		if w.Code != 200 {
+			t.Fatal(w.Body)
+		}
+	}
+	for _, secret := range []string{"Иванов", "12.03.1985", "непонятный ответ", "secret-number", "private-channel", "secret-"} {
+		if strings.Contains(output.String(), secret) {
+			t.Fatalf("technical log exposed input: %s", secret)
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	var event map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event["reason_code"] != "R-05" || event["fail_count"] != float64(3) || event["input_issue"] != "slot_choice_unrecognized" || event["previous_state"] != dialogue.StateChooseSlot {
+		t.Fatalf("missing safe diagnosis: %v", event)
+	}
+}
+
 func testAPI(t *testing.T, token string) (*Server, *misclient.MockMISClient) {
 	t.Helper()
 	store, err := storage.Open(":memory:")

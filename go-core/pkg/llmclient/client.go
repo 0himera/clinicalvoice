@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/himera/tochka-voice/go-core/pkg/diagnostics"
 )
 
 // Config selects a bounded NLU adapter. Remote Gemini must be explicitly enabled.
@@ -23,9 +25,12 @@ type Config struct {
 	BaseURL     string        `json:"base_url"` // URL эндпоинта
 	APIKey      string        `json:"-"`        // Never serialize credentials.
 	Model       string        `json:"model"`    // Имя модели
-	Timeout     time.Duration `json:"timeout"`  // Таймаут запроса (по умолчанию 3 сек)
+	Timeout     time.Duration `json:"timeout"`  // Таймаут запроса (по умолчанию 5 сек)
+	MaxTokens   int           `json:"max_tokens"`
 	AllowRemote bool          `json:"allow_remote"`
 }
+
+const defaultMaxTokens = 256
 
 // LoadConfigFromEnv загружает настройки из переменных окружения
 func LoadConfigFromEnv() Config {
@@ -41,10 +46,19 @@ func LoadConfigFromEnv() Config {
 	baseURL := os.Getenv("LLM_BASE_URL")
 	model := os.Getenv("LLM_MODEL")
 
-	timeoutSec := 3
+	timeoutSec := 5
 	if tStr := os.Getenv("LLM_TIMEOUT_SEC"); tStr != "" {
 		if t, err := strconv.Atoi(tStr); err == nil && t > 0 {
 			timeoutSec = t
+		}
+	}
+	maxTokens := defaultMaxTokens
+	if raw := os.Getenv("LLM_MAX_TOKENS"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value <= 0 {
+			maxTokens = -1 // Preserve invalid input for Validate instead of silently using the default.
+		} else {
+			maxTokens = value
 		}
 	}
 
@@ -58,6 +72,8 @@ func LoadConfigFromEnv() Config {
 	if model == "" {
 		if provider == "gemini" {
 			model = "gemini-3.5-flash-lite"
+		} else if provider == "ollama" {
+			model = "gemma4:e4b"
 		} else {
 			model = "qwen2.5:7b"
 		}
@@ -69,6 +85,7 @@ func LoadConfigFromEnv() Config {
 		APIKey:      apiKey,
 		Model:       model,
 		Timeout:     time.Duration(timeoutSec) * time.Second,
+		MaxTokens:   maxTokens,
 		AllowRemote: os.Getenv("LLM_ALLOW_REMOTE") == "true",
 	}
 }
@@ -103,6 +120,7 @@ type ChatResponse struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
@@ -134,6 +152,9 @@ func NewUniversalLLMClient(cfg Config) *UniversalLLMClient {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second
 	}
+	if cfg.MaxTokens == 0 {
+		cfg.MaxTokens = defaultMaxTokens
+	}
 	return &UniversalLLMClient{
 		config: cfg,
 		httpClient: &http.Client{
@@ -153,6 +174,9 @@ func (c *UniversalLLMClient) Validate() error {
 	}
 	if c.config.Model == "" {
 		return errors.New("LLM_MODEL is required")
+	}
+	if c.config.MaxTokens < 1 || c.config.MaxTokens > 4096 {
+		return errors.New("LLM_MAX_TOKENS must be between 1 and 4096")
 	}
 	if c.IsLocal() && (c.config.Provider == "ollama" || c.config.Provider == "vllm" || c.config.APIKey != "") {
 		return nil
@@ -188,10 +212,13 @@ func (c *UniversalLLMClient) Chat(ctx context.Context, messages []ChatMessage, j
 		Model:       c.config.Model,
 		Messages:    messages,
 		Temperature: 0,
-		MaxTokens:   768,
+		MaxTokens:   c.config.MaxTokens,
 	}
 	if c.config.Provider == "gemini" {
 		reqBody.ReasoningEffort = "minimal"
+	} else if c.config.Provider == "ollama" {
+		// NLU needs a short classification, not a reasoning trace consuming its budget.
+		reqBody.ReasoningEffort = "none"
 	}
 	if jsonMode {
 		reqBody.ResponseFormat = &RespFormat{Type: "json_schema", JSONSchema: &ResponseSchema{Name: "clinic_nlu", Strict: true, Schema: nluSchema()}}
@@ -242,6 +269,10 @@ func (c *UniversalLLMClient) Chat(ctx context.Context, messages []ChatMessage, j
 
 	if len(chatResp.Choices) == 0 {
 		return "", fmt.Errorf("пустой ответ choices от LLM")
+	}
+	diagnostics.ModelOutput(ctx, c.config.Provider, c.config.Model, chatResp.Choices[0].FinishReason, chatResp.Choices[0].Message.Content)
+	if chatResp.Choices[0].FinishReason == "length" {
+		return "", errors.New("NLU response exceeded token limit")
 	}
 
 	resContent := strings.TrimSpace(chatResp.Choices[0].Message.Content)

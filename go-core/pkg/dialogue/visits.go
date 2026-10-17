@@ -63,9 +63,12 @@ func (f *FSMController) selectedVisit(ctx context.Context, s *models.CallSession
 	}
 }
 func (f *FSMController) confirmCancel(ctx context.Context, s *models.CallSession, text string) StepResult {
-	if s.OutboundVisitID > 0 && ParseIntent(text) == IntentReschedule {
+	if ParseIntent(text) == IntentReschedule {
 		s.CurrentScenario = models.ScenarioReschedule
-		return f.selectedVisit(ctx, s, s.ActiveVisits[0])
+		if len(s.ActiveVisits) > 0 {
+			return f.selectedVisit(ctx, s, s.ActiveVisits[0])
+		}
+		return f.menu(ctx, s, text)
 	}
 	if Confirmation(text) == IntentAffirm && isTaskIntent(ParseIntent(text)) && ParseIntent(text) != IntentCancel {
 		return f.retry(ctx, s, "Сейчас подтверждаем отмену существующей записи. Отменить её? Скажите да или нет.")

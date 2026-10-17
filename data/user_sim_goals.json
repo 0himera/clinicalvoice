@@ -1,0 +1,526 @@
+[
+  {
+    "id": "SIM-01",
+    "name": "Привередливый пациент: вечер пятницы с фоллбэком на четверг",
+    "category": "booking",
+    "persona": {
+      "full_name": "Кузнецов Игорь Владимирович",
+      "birth_date": "14 мая 1987 года",
+      "phone": "+79123456789",
+      "tone": "busy_and_impatient",
+      "speech_style": "разговаривает короткими фразами, деловой тон, ценит время"
+    },
+    "goal": {
+      "intent": "записаться к терапевту Рябинину на вечер пятницы",
+      "doctor_preference": "Рябинин",
+      "constraints": {
+        "preferred_day": "пятница",
+        "preferred_time_window": "после 16:00"
+      },
+      "behavior_rules": [
+        "Требуй записать к терапевту Рябинину на вечер пятницы после 16:00.",
+        "Если на вечер пятницы слотов нет или предлагают субботу — попроси вечер четверга после 16:00 (не используй союз 'или').",
+        "Если и на четверг у Рябинина нет времени и робот предлагает другого терапевта — согласись и выбери предложенный слот, сказав 'Давайте первый вариант'.",
+        "Когда предлагают варианты — ответь кратко 'второй вариант' (или 'первый вариант').",
+        "Когда робот называет параметры записи и спрашивает подтверждение — ответь 'Да, подтверждаю'."
+      ]
+    },
+    "mis_fixture": {
+      "blocked_slots": [
+        {
+          "doctor_id": 1,
+          "doctor_name": "Рябинин Илья Константинович",
+          "datetime": "2026-10-23T16:40:00+04:00"
+        }
+      ],
+      "existing_visits": []
+    },
+    "success_criteria": {
+      "expected_fsm_state": "STATE_FINAL",
+      "expected_outcome": "BOOKED",
+      "max_turns": 10,
+      "allow_transfer": false
+    }
+  },
+  {
+    "id": "SIM-02",
+    "name": "Пожилой пациент: участковый терапевт, забывает год рождения",
+    "category": "booking",
+    "persona": {
+      "full_name": "Морозова Валентина Петровна",
+      "birth_date": "28 августа 1948 года",
+      "phone": "+79051112233",
+      "tone": "polite_elderly",
+      "speech_style": "вежливая пожилая женщина, говорит неторопливо, сначала называет день и месяц без года"
+    },
+    "goal": {
+      "intent": "записаться к своему участковому врачу",
+      "doctor_preference": "",
+      "constraints": {
+        "preferred_time_window": "утро, до 12:00"
+      },
+      "behavior_rules": [
+        "Скажи, что хочешь к своему участковому врачу.",
+        "Когда спросят ФИО и дату рождения, сначала назови ФИО и только 'двадцать восьмое августа'.",
+        "Когда робот попросит назвать полную дату (число, месяц и год) — назови полную дату: 'Двадцать восьмое августа 1948 года'.",
+        "Выбери первый утренний вариант и подтверди запись."
+      ]
+    },
+    "mis_fixture": {
+      "blocked_slots": [],
+      "existing_visits": []
+    },
+    "success_criteria": {
+      "expected_fsm_state": "STATE_FINAL",
+      "expected_outcome": "BOOKED",
+      "max_turns": 8,
+      "allow_transfer": false
+    }
+  },
+  {
+    "id": "SIM-03",
+    "name": "Торопливый пациент: срочная запись к хирургу",
+    "category": "booking",
+    "persona": {
+      "full_name": "Смирнов Алексей Викторович",
+      "birth_date": "10 ноября 1992 года",
+      "phone": "+79261112244",
+      "tone": "busy_and_impatient",
+      "speech_style": "говорит максимально коротко, без лишних слов: 'К хирургу', 'Первый', 'Да'"
+    },
+    "goal": {
+      "intent": "записаться к хирургу Соколову на самое ближайшее время",
+      "doctor_preference": "Соколов",
+      "constraints": {
+        "preferred_time_window": "любое ближайшее"
+      },
+      "behavior_rules": [
+        "Сразу скажи: 'Запишите к хирургу'.",
+        "Назови ФИО и дату рождения четко в одном предложении.",
+        "Выбери первый предложенный вариант слота.",
+        "Подтверди запись коротким словом 'Да, запишите'."
+      ]
+    },
+    "mis_fixture": {
+      "blocked_slots": [],
+      "existing_visits": []
+    },
+    "success_criteria": {
+      "expected_fsm_state": "STATE_FINAL",
+      "expected_outcome": "BOOKED",
+      "max_turns": 6,
+      "allow_transfer": false
+    }
+  },
+  {
+    "id": "SIM-04",
+    "name": "Перенос существующей записи с сохранением Visit ID",
+    "category": "reschedule",
+    "persona": {
+      "full_name": "Васильев Дмитрий Олегович",
+      "birth_date": "03 февраля 1983 года",
+      "phone": "+79165557788",
+      "tone": "confident",
+      "speech_style": "спокойный, уверенный голос, четко формулирует задачу переноса"
+    },
+    "goal": {
+      "intent": "перенести уже существующую запись к терапевту на другое время",
+      "doctor_preference": "Рябинин",
+      "constraints": {
+        "preferred_day": "следующая неделя"
+      },
+      "behavior_rules": [
+        "Скажи, что хочешь перенести свою запись к терапевту.",
+        "Назови свои данные, чтобы робот нашел запись.",
+        "Когда робот назовет текущую запись и предложит варианты — выбери первый вариант.",
+        "Подтверди перенос записи."
+      ]
+    },
+    "mis_fixture": {
+      "blocked_slots": [],
+      "existing_visits": [
+        {
+          "id": 5010,
+          "client_id": 1,
+          "doctor_id": 1,
+          "datetime": "2026-10-20T10:00:00+04:00",
+          "status": "Запланирована"
+        }
+      ]
+    },
+    "success_criteria": {
+      "expected_fsm_state": "STATE_FINAL",
+      "expected_outcome": "RESCHEDULED",
+      "max_turns": 8,
+      "allow_transfer": false
+    }
+  },
+  {
+    "id": "SIM-05",
+    "name": "Отмена записи с подтверждением",
+    "category": "cancellation",
+    "persona": {
+      "full_name": "Попова Наталья Сергеевна",
+      "birth_date": "19 июля 1991 года",
+      "phone": "+79034445566",
+      "tone": "polite",
+      "speech_style": "вежливая, предупреждает об отмене визита, чтобы освободить место другим"
+    },
+    "goal": {
+      "intent": "отменить свою запись к терапевту Верещагину, так как не сможет прийти",
+      "doctor_preference": "Верещагин",
+      "constraints": {},
+      "behavior_rules": [
+        "Скажи, что нужно отменить запись к врачу.",
+        "Назови свои ФИО и дату рождения.",
+        "Твой лечащий врач — терапевт Верещагин Андрей Михайлович. Когда робот называет запись: 'Верещагин Андрей Михайлович, 21.10.2026 11:20. Подтверждаете отмену?' — скажи 'Да, отмените, пожалуйста'."
+      ]
+    },
+    "mis_fixture": {
+      "blocked_slots": [],
+      "existing_visits": [
+        {
+          "id": 5020,
+          "client_id": 1,
+          "doctor_id": 1,
+          "datetime": "2026-10-21T11:20:00+04:00",
+          "status": "Запланирована"
+        }
+      ]
+    },
+    "success_criteria": {
+      "expected_fsm_state": "STATE_FINAL",
+      "expected_outcome": "CANCELLED",
+      "max_turns": 7,
+      "allow_transfer": false
+    }
+  },
+  {
+    "id": "SIM-06",
+    "name": "Запись к кардиологу без направления: согласие на терапевта",
+    "category": "referral",
+    "persona": {
+      "full_name": "Николаев Роман Андреевич",
+      "birth_date": "05 декабря 1976 года",
+      "phone": "+79218889900",
+      "tone": "reasonable",
+      "speech_style": "рассудительный, готов следовать правилам поликлиники"
+    },
+    "goal": {
+      "intent": "попасть к кардиологу, но при отсутствии направления согласиться на прием к терапевту",
+      "doctor_preference": "Смирнов",
+      "constraints": {},
+      "behavior_rules": [
+        "Попроси записать к кардиологу.",
+        "Когда робот скажет, что к кардиологу нужно направление терапевта, и предложит записать к терапевту — скажи 'Хорошо, давайте к терапевту'.",
+        "Назови свои данные, выбери первый слот и подтверди запись."
+      ]
+    },
+    "mis_fixture": {
+      "blocked_slots": [],
+      "existing_visits": []
+    },
+    "success_criteria": {
+      "expected_fsm_state": "STATE_FINAL",
+      "expected_outcome": "BOOKED",
+      "max_turns": 10,
+      "allow_transfer": false
+    }
+  },
+  {
+    "id": "SIM-07",
+    "name": "Запись ребенка законным представителем",
+    "category": "guardian",
+    "persona": {
+      "full_name": "Соколова Екатерина Павловна",
+      "birth_date": "16 апреля 1989 года",
+      "phone": "+79112223344",
+      "tone": "anxious_parent",
+      "speech_style": "мама ребенка, говорит заботливо, четко подтверждает статус родителя"
+    },
+    "goal": {
+      "intent": "записать сына Мишу к педиатру",
+      "doctor_preference": "Кузнецова",
+      "constraints": {},
+      "behavior_rules": [
+        "Скажи, что хочешь записать ребенка к педиатру.",
+        "Назови данные ребенка: Соколов Михаил Дмитриевич, 10 мая 2018 года.",
+        "Когда робот спросит, являешься ли ты законным представителем — ответь 'Да, я мама'.",
+        "Выбери первый слот и подтверди запись."
+      ]
+    },
+    "mis_fixture": {
+      "blocked_slots": [],
+      "existing_visits": []
+    },
+    "success_criteria": {
+      "expected_fsm_state": "STATE_FINAL",
+      "expected_outcome": "BOOKED",
+      "max_turns": 8,
+      "allow_transfer": false
+    }
+  },
+  {
+    "id": "SIM-08",
+    "name": "Красный флаг: острая боль за грудиной (экстренная эскалация)",
+    "category": "emergency",
+    "persona": {
+      "full_name": "Григорьев Сергей Николаевич",
+      "birth_date": "22 июня 1965 года",
+      "phone": "+79023334455",
+      "tone": "distressed",
+      "speech_style": "тяжело дышит, тревожный голос, жалуется на сильную давящую боль в сердце"
+    },
+    "goal": {
+      "intent": "сообщить о внезапном тяжелом состоянии и получить скорую помощь",
+      "doctor_preference": "",
+      "constraints": {},
+      "behavior_rules": [
+        "Сразу скажи: 'Мне очень плохо, сильно давит в груди и отдает в левую руку, тяжело дышать'.",
+        "На любые вопросы робота о вызове скорой соглашайся: 'Да, помогите, пожалуйста'."
+      ]
+    },
+    "mis_fixture": {
+      "blocked_slots": [],
+      "existing_visits": []
+    },
+    "success_criteria": {
+      "expected_fsm_state": "STATE_TRANSFER",
+      "expected_outcome": "TRANSFERRED",
+      "max_turns": 3,
+      "allow_transfer": true
+    }
+  },
+  {
+    "id": "SIM-09",
+    "name": "Вызов врача на дом при высокой температуре (С-06)",
+    "category": "home_visit",
+    "persona": {
+      "full_name": "Медведев Артем Юрьевич",
+      "birth_date": "11 сентября 1984 года",
+      "phone": "+79156667788",
+      "tone": "sick",
+      "speech_style": "простуженный слабый голос, кашляет, диктует адрес"
+    },
+    "goal": {
+      "intent": "оформить вызов врача на дом из-за температуры 39",
+      "doctor_preference": "",
+      "constraints": {},
+      "behavior_rules": [
+        "Скажи: 'Мне нужно вызвать врача на дом, у меня температура тридцать девять'.",
+        "Назови ФИО и дату рождения.",
+        "Назови адрес: 'улица Ленина дом 45 квартира 12 подъезд 1 этаж 3 домофон 12К'.",
+        "Подтверди вызов врача на дом."
+      ]
+    },
+    "mis_fixture": {
+      "blocked_slots": [],
+      "existing_visits": []
+    },
+    "success_criteria": {
+      "expected_fsm_state": "STATE_FINAL",
+      "expected_outcome": "HOME_REQUESTED",
+      "max_turns": 6,
+      "allow_transfer": false
+    }
+  },
+  {
+    "id": "SIM-10",
+    "name": "Жалоба на регистратуру: перевод на старшего администратора",
+    "category": "conflict",
+    "persona": {
+      "full_name": "Ковалев Виктор Сергеевич",
+      "birth_date": "04 октября 1979 года",
+      "phone": "+79198887766",
+      "tone": "angry",
+      "speech_style": "раздраженный тон, возмущается качеством обслуживания, требует начальство"
+    },
+    "goal": {
+      "intent": "подать жалобу на хамство в регистратуре и связаться со старшим администратором",
+      "doctor_preference": "",
+      "constraints": {},
+      "behavior_rules": [
+        "Скажи: 'Я хочу подать официальную жалобу на сотрудников регистратуры, соедините со старшим администратором'.",
+        "На любые попытки робота успокоить настаивай на переводе на руководство."
+      ]
+    },
+    "mis_fixture": {
+      "blocked_slots": [],
+      "existing_visits": []
+    },
+    "success_criteria": {
+      "expected_fsm_state": "STATE_TRANSFER",
+      "expected_outcome": "TRANSFERRED",
+      "max_turns": 4,
+      "allow_transfer": true
+    }
+  },
+  {
+    "id": "SIM-11",
+    "name": "Пациент с вопросами: «Зачем вам паспортные данные?»",
+    "category": "booking",
+    "persona": {
+      "full_name": "Павлов Дмитрий Константинович",
+      "birth_date": "15 марта 1986 года",
+      "phone": "+79065554433",
+      "tone": "suspicious",
+      "speech_style": "подозрительный, осторожный, задает вопросы о защите данных"
+    },
+    "goal": {
+      "intent": "записаться к терапевту, предварительно выяснив, зачем нужны персональные данные",
+      "doctor_preference": "",
+      "constraints": {},
+      "behavior_rules": [
+        "Скажи, что хочешь записаться к терапевту.",
+        "Когда робот спросит ФИО и дату рождения, спроси: 'А зачем вам мои персональные данные?'.",
+        "После объяснения робота назови ФИО и дату рождения.",
+        "Выбери первый предложенный вариант и подтверди запись."
+      ]
+    },
+    "mis_fixture": {
+      "blocked_slots": [],
+      "existing_visits": []
+    },
+    "success_criteria": {
+      "expected_fsm_state": "STATE_FINAL",
+      "expected_outcome": "BOOKED",
+      "max_turns": 8,
+      "allow_transfer": false
+    }
+  },
+  {
+    "id": "SIM-12",
+    "name": "Запись к конкретному терапевту Богдановой на утро",
+    "category": "booking",
+    "persona": {
+      "full_name": "Федорова Ирина Анатольевна",
+      "birth_date": "29 мая 1981 года",
+      "phone": "+79251113355",
+      "tone": "confident",
+      "speech_style": "четкая, доброжелательная, знает своего врача в лицо"
+    },
+    "goal": {
+      "intent": "записаться к терапевту Богдановой Нине Сергеевне на утро",
+      "doctor_preference": "Богданова",
+      "constraints": {
+        "preferred_time_window": "утро, до 12:00"
+      },
+      "behavior_rules": [
+        "Скажи: 'Запишите меня к терапевту Богдановой'.",
+        "Назови свои ФИО и дату рождения.",
+        "Выбери подходящий утренний слот.",
+        "Подтверди запись."
+      ]
+    },
+    "mis_fixture": {
+      "blocked_slots": [],
+      "existing_visits": []
+    },
+    "success_criteria": {
+      "expected_fsm_state": "STATE_FINAL",
+      "expected_outcome": "BOOKED",
+      "max_turns": 6,
+      "allow_transfer": false
+    }
+  },
+  {
+    "id": "SIM-13",
+    "name": "Запись родственника: муж записывает жену к офтальмологу",
+    "category": "booking",
+    "persona": {
+      "full_name": "Романов Андрей Сергеевич",
+      "birth_date": "12 января 1980 года",
+      "phone": "+79172228899",
+      "tone": "helpful",
+      "speech_style": "заботливый муж, звонит записать супругу"
+    },
+    "goal": {
+      "intent": "записать свою жену Романову Ольгу к офтальмологу",
+      "doctor_preference": "Васильева",
+      "constraints": {},
+      "behavior_rules": [
+        "Скажи: 'Запишите мою жену к офтальмологу'.",
+        "Когда робот спросит данные пациента, назови данные жены: 'Романова Ольга Ивановна, двадцать второе июля тысяча девятьсот восемьдесят второго года'.",
+        "Выбери первый слот и подтверди запись."
+      ]
+    },
+    "mis_fixture": {
+      "blocked_slots": [],
+      "existing_visits": []
+    },
+    "success_criteria": {
+      "expected_fsm_state": "STATE_FINAL",
+      "expected_outcome": "BOOKED",
+      "max_turns": 7,
+      "allow_transfer": false
+    }
+  },
+  {
+    "id": "SIM-14",
+    "name": "Отсутствие слотов: вежливый отказ и завершение звонка",
+    "category": "booking",
+    "persona": {
+      "full_name": "Ильин Семен Михайлович",
+      "birth_date": "08 июля 1988 года",
+      "phone": "+79093332211",
+      "tone": "polite",
+      "speech_style": "вежливый, если предложенное время не подходит — отказывается и прощается"
+    },
+    "goal": {
+      "intent": "попробовать записаться к терапевту, но если время не устраивает — отказаться и завершить разговор",
+      "doctor_preference": "",
+      "constraints": {
+        "preferred_day": "воскресенье"
+      },
+      "behavior_rules": [
+        "Попроси записать к терапевту строго на воскресенье.",
+        "Назови свои данные.",
+        "Когда робот предложит будние дни, скажи: 'Нет, в будни я никак не могу, отмените подбор'.",
+        "Когда робот спросит 'Могу еще чем-то помочь?' — ответь 'Нет, спасибо, до свидания' и вызови hangup."
+      ]
+    },
+    "mis_fixture": {
+      "blocked_slots": [],
+      "existing_visits": []
+    },
+    "success_criteria": {
+      "expected_fsm_state": "STATE_FINAL",
+      "expected_outcome": "",
+      "max_turns": 7,
+      "allow_transfer": false
+    }
+  },
+  {
+    "id": "SIM-15",
+    "name": "Barge-in тест: перебивание робота при выборе времени",
+    "category": "booking",
+    "persona": {
+      "full_name": "Тарасов Олег Владиславович",
+      "birth_date": "17 мая 1990 года",
+      "phone": "+79187776655",
+      "tone": "busy_and_impatient",
+      "speech_style": "не дослушивает фразу робота до конца, сразу выкрикивает вариант"
+    },
+    "goal": {
+      "intent": "записаться к терапевту, перебив робота на словах 'первый вариант'",
+      "doctor_preference": "",
+      "constraints": {},
+      "behavior_rules": [
+        "Скажи: 'Запишите меня к терапевту'.",
+        "Назови ФИО и дату рождения.",
+        "Как только робот начнет предлагать варианты слотов — перебей его фразой: 'Первый! Давайте первый вариант!'.",
+        "Подтверди запись."
+      ]
+    },
+    "mis_fixture": {
+      "blocked_slots": [],
+      "existing_visits": []
+    },
+    "success_criteria": {
+      "expected_fsm_state": "STATE_FINAL",
+      "expected_outcome": "BOOKED",
+      "max_turns": 7,
+      "allow_transfer": false
+    }
+  }
+]

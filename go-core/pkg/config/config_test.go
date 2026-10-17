@@ -24,3 +24,30 @@ func TestDialogueDebugRequiresExplicitMockMode(t *testing.T) {
 		t.Fatal("transcripts allowed on the external MIS")
 	}
 }
+
+func TestEncryptedTranscriptsAreExplicitAndBoundedOnStand(t *testing.T) {
+	t.Setenv("CORE_HOST", "127.0.0.1")
+	t.Setenv("PORT", "8080")
+	t.Setenv("MIS_API_URL", "https://example.test/api/v1")
+	t.Setenv("SCHEDULE_PATH", "schedule.xlsx")
+	t.Setenv("MIS_API_TOKEN", "stand-token")
+	t.Setenv("DEBUG_DIALOGUE", "false")
+	t.Setenv("ALLOW_DEMO_CALLS_OUTSIDE_WINDOW", "false")
+	t.Setenv("TRANSCRIPT_LOGGING", "false")
+	t.Setenv("TRANSCRIPT_RETENTION_HOURS", "24")
+	cfg, err := Load()
+	if err != nil || cfg.Transcripts {
+		t.Fatalf("transcripts enabled without opt-in: %v", err)
+	}
+	t.Setenv("TRANSCRIPT_LOGGING", "true")
+	cfg, err = Load()
+	if err != nil || !cfg.Transcripts || cfg.TranscriptHours != 24 {
+		t.Fatalf("explicit encrypted mode rejected: %v", err)
+	}
+	for _, hours := range []string{"0", "25", "invalid"} {
+		t.Setenv("TRANSCRIPT_RETENTION_HOURS", hours)
+		if _, err := Load(); err == nil {
+			t.Fatalf("unbounded retention accepted: %q", hours)
+		}
+	}
+}

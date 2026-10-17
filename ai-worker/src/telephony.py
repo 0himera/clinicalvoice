@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 
 from src.audio import EndpointDetector, frame, pcm_to_wav, wav_to_pcm
-from src.diagnostics import DialogueTrace
+from src.diagnostics import CallDiagnostics
 from src.services import Services
 from src.settings import Settings
 
@@ -40,7 +40,7 @@ class Bridge:
     def __init__(self, settings: Settings, services: Services):
         self.settings = settings
         self.services = services
-        self.trace = DialogueTrace(settings.debug_dialogue, settings.debug_log_dir)
+        self.trace = CallDiagnostics(settings)
         self.calls: dict[str, Call] = {}
         self.tasks: set[asyncio.Task] = set()
         self.servers: list[asyncio.Server] = []
@@ -82,14 +82,27 @@ class Bridge:
 
     async def post(self, path: str, data: dict | None = None) -> dict:
         started = time.monotonic()
+        operation = path.rsplit("/", 1)[-1]
+        call_id = (data or {}).get("call_id")
+        if not call_id and len(path.split("/")) == 5:
+            call_id = path.split("/")[-2]
         try:
             response = await self.http.post(path, json=data)
             response.raise_for_status()
+            self.trace(
+                "core_request",
+                call_id=call_id,
+                operation=operation,
+                status=response.status_code,
+                latency_ms=round((time.monotonic() - started) * 1000),
+            )
             return response.json()
         except httpx.HTTPError as exc:
             self.trace(
                 "core_request_error",
                 path=path,
+                call_id=call_id,
+                operation=operation,
                 error=type(exc).__name__,
                 latency_ms=round((time.monotonic() - started) * 1000),
                 status=exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None,
@@ -295,7 +308,7 @@ class Bridge:
                     started_asr = time.monotonic()
                     text = await self.services.transcribe(pcm_to_wav(pcm))
                     audio_fields = {}
-                    if self.settings.debug_dialogue:
+                    if self.settings.debug_dialogue or self.settings.technical_logs:
                         samples = array("h", pcm)
                         rms = math.sqrt(
                             sum(value * value for value in samples) / max(1, len(samples))
@@ -305,12 +318,18 @@ class Bridge:
                             "peak_percent": round(
                                 max((abs(s) for s in samples), default=0) / 32768 * 100, 1
                             ),
+                            # G.711 decoding saturates below PCM16 full scale.
+                            "clipped_percent": round(
+                                sum(abs(s) >= 31744 for s in samples) / max(1, len(samples)) * 100,
+                                2,
+                            ),
                         }
                     self.trace(
                         "asr_result",
                         call_id=call_id,
                         revision=version,
                         text=text,
+                        text_chars=len(text),
                         audio_ms=round(len(pcm) / 16),
                         latency_ms=round((time.monotonic() - started_asr) * 1000),
                         **audio_fields,

@@ -45,6 +45,7 @@ type StepResult struct {
 	Outcome          string `json:"outcome,omitempty"`
 	EscalationQueued bool   `json:"escalation_queued,omitempty"`
 	ReasonCode       string `json:"reason_code,omitempty"`
+	DiagnosticCode   string `json:"-"`
 	keepPrompt       bool
 }
 
@@ -179,7 +180,8 @@ func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession,
 		return f.transfer(ctx, s, "101", "R-07: сведения о другом пациенте, полномочия не проверены", "Сведения о чужих записях сообщает сотрудник после проверки полномочий. Соединяю с регистратором.")
 	}
 	identityContinuation := s.CurrentState == StateIdentity && intent == IntentBooking && ExtractBirthDate(text) != "" && f.extractSpecialty(text) == "" && f.extractDoctor(text) == nil
-	if canSwitchTask(s.CurrentState) && isTaskIntent(intent) && !identityContinuation {
+	slotChoiceInFlight := s.CurrentState == StateChooseSlot && (intent == IntentBooking || (s.CurrentScenario == models.ScenarioReschedule && intent == IntentReschedule))
+	if canSwitchTask(s.CurrentState) && isTaskIntent(intent) && !identityContinuation && !slotChoiceInFlight {
 		return f.menu(ctx, s, text)
 	}
 	switch s.CurrentState {
@@ -197,7 +199,8 @@ func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession,
 		if Confirmation(text) == IntentDeny {
 			return f.transfer(ctx, s, "101", "C-12: требуется законный представитель ребёнка", "Запись ребёнка оформляет законный представитель. Соединяю с регистратором.")
 		}
-		if Confirmation(text) != IntentAffirm {
+		isGuardianAffirm := Confirmation(text) == IntentAffirm || (containsAny(norm, "мама", "папа", "родитель", "представитель", "опекун", "мать", "отец") && !word(norm, "не"))
+		if !isGuardianAffirm {
 			return f.retry(ctx, s, "Вы законный представитель ребёнка? Скажите да или нет.")
 		}
 		s.Guardian = true
@@ -289,7 +292,8 @@ func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession,
 		if Confirmation(text) == IntentDeny || containsAny(norm, "другой человек", "ошиблись", "не я") {
 			return StepResult{NextState: StateDone, BotSpeech: "Попросите пациента связаться с регистратурой поликлиники номер семь. Всего доброго!", ShouldHangup: true, Outcome: "WRONG_PERSON"}
 		}
-		if Confirmation(text) != IntentAffirm {
+		isIdentityAffirm := Confirmation(text) == IntentAffirm || containsAny(norm, "это я", "слушаю", "у аппарата", "так точно") || word(norm, "я")
+		if !isIdentityAffirm {
 			return f.retry(ctx, s, "Это вы? Скажите да или нет.")
 		}
 		s.Identified = true

@@ -18,6 +18,8 @@ class Settings:
     max_calls: int = 8
     debug_dialogue: bool = False
     debug_log_dir: str = "var/debug"
+    technical_logs: bool = False
+    technical_log_dir: str = "var/log"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -34,6 +36,8 @@ class Settings:
             max_calls=int(os.getenv("MAX_VOICE_CALLS", "8")),
             debug_dialogue=os.getenv("DEBUG_DIALOGUE", "false").lower() == "true",
             debug_log_dir=os.getenv("DEBUG_LOG_DIR", "var/debug"),
+            technical_logs=True,
+            technical_log_dir=os.getenv("TECHNICAL_LOG_DIR", "var/log"),
         )
         if settings.debug_dialogue and os.getenv("MIS_API_TOKEN"):
             raise ValueError("dialogue transcript debugging is available only with the local mock")

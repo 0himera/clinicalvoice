@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/himera/tochka-voice/go-core/pkg/diagnostics"
 	"github.com/himera/tochka-voice/go-core/pkg/models"
 )
 
@@ -59,6 +61,7 @@ type RealMISClient struct {
 	doctorsMu    sync.Mutex
 	doctors      []models.Doctor
 	doctorsUntil time.Time
+	events       *slog.Logger
 }
 
 func NewRealMISClient(baseURL, token string) *RealMISClient {
@@ -66,11 +69,41 @@ func NewRealMISClient(baseURL, token string) *RealMISClient {
 		baseURL = "https://crm-med-mock.dbi-testing.ru/api/v1"
 	}
 	return &RealMISClient{baseURL: strings.TrimRight(baseURL, "/"), token: token,
+		events:     slog.Default(),
 		httpClient: &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		limiter:    rate.NewLimiter(rate.Every(6*time.Second), 1)}
 }
 
-func (c *RealMISClient) doRequest(ctx context.Context, method, path string, body, out any) error {
+func (c *RealMISClient) doRequest(ctx context.Context, method, path string, body, out any) (resultErr error) {
+	started := time.Now()
+	var requestStarted time.Time
+	status := 0
+	phase := "limiter"
+	defer func() {
+		if c.events == nil {
+			return
+		}
+		elapsed, queued := time.Since(started), time.Since(started)
+		if !requestStarted.IsZero() {
+			queued = requestStarted.Sub(started)
+		}
+		issue := ""
+		if resultErr != nil {
+			issue = phase
+		}
+		resource := strings.SplitN(path, "?", 2)[0]
+		parts := strings.Split(strings.Trim(resource, "/"), "/")
+		if len(parts) > 0 && (parts[0] == "clients" || parts[0] == "visits" || parts[0] == "doctors" || parts[0] == "escalations") {
+			resource = "/" + parts[0]
+			if len(parts) > 1 {
+				resource += "/{id}"
+			}
+		} else {
+			resource = "unknown"
+		}
+		c.events.Info("mis_request", "call_id", diagnostics.CallID(ctx), "method", method, "resource", resource, "status", status,
+			"queue_ms", queued.Milliseconds(), "request_ms", (elapsed - queued).Milliseconds(), "latency_ms", elapsed.Milliseconds(), "error_kind", issue)
+	}()
 	c.mu.Lock()
 	wait := time.Until(c.blockedUntil)
 	c.mu.Unlock()
@@ -86,6 +119,8 @@ func (c *RealMISClient) doRequest(ctx context.Context, method, path string, body
 	if err := c.limiter.Wait(ctx); err != nil {
 		return err
 	}
+	requestStarted = time.Now()
+	phase = "encode"
 	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -100,11 +135,14 @@ func (c *RealMISClient) doRequest(ctx context.Context, method, path string, body
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
+	phase = "transport"
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("MIS transport: %w", err)
 	}
 	defer resp.Body.Close()
+	status = resp.StatusCode
+	phase = "http"
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		e := &APIError{StatusCode: resp.StatusCode}
@@ -119,6 +157,7 @@ func (c *RealMISClient) doRequest(ctx context.Context, method, path string, body
 	if out == nil {
 		return nil
 	}
+	phase = "decode"
 	if err = json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(out); err != nil {
 		return fmt.Errorf("decode MIS response: %w", err)
 	}

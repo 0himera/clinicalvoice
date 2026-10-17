@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -35,7 +36,23 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	eventsFile, err := diagnostics.Open(cfg.TechnicalLogDir, "core-events")
+	if err != nil {
+		return fmt.Errorf("open technical log: %w", err)
+	}
+	defer eventsFile.Close()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stdout, eventsFile), nil)))
 	var trace *slog.Logger
+	var encrypted *diagnostics.Encrypted
+	if cfg.Transcripts {
+		encrypted, err = diagnostics.OpenEncrypted(cfg.TranscriptDir, cfg.TranscriptKey, time.Duration(cfg.TranscriptHours)*time.Hour)
+		if err != nil {
+			return fmt.Errorf("open encrypted transcript: %w", err)
+		}
+		defer encrypted.Close()
+		trace = slog.New(slog.NewJSONHandler(encrypted, nil))
+		slog.Info("encrypted text transcripts enabled", "retention_hours", cfg.TranscriptHours)
+	}
 	if cfg.DebugDialogue {
 		file, err := diagnostics.Open(cfg.DebugLogDir, "core")
 		if err != nil {
@@ -47,6 +64,9 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if encrypted != nil {
+		go encrypted.Run(ctx.Done())
+	}
 	store, err := storage.Open(cfg.Database)
 	if err != nil {
 		return err
@@ -118,7 +138,7 @@ func run() error {
 		redirector = telephony.AMI{Address: cfg.AMIAddress, Username: cfg.AMIUser, Secret: cfg.AMISecret}
 	}
 	reminders := campaign.New(store, mis, dialer, snapshot.Holidays, cfg.DemoCalls)
-	api := httpapi.New(httpapi.Config{FSM: fsm, MIS: mis, Slots: slots, Store: store, Campaign: reminders, Token: cfg.APIToken, Mode: mode, Redirector: redirector, Escalate: outbox.Enqueue, Trace: trace})
+	api := httpapi.New(httpapi.Config{FSM: fsm, MIS: mis, Slots: slots, Store: store, Campaign: reminders, Token: cfg.APIToken, Mode: mode, Redirector: redirector, Escalate: outbox.Enqueue, Trace: trace, Events: slog.Default()})
 	server := &http.Server{Addr: cfg.Address, Handler: api, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 45 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	workers, stopWorkers := context.WithCancel(ctx)
 	defer stopWorkers()

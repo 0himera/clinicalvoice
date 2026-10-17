@@ -1,12 +1,15 @@
 package misclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +19,30 @@ import (
 	"github.com/himera/tochka-voice/go-core/pkg/models"
 	"github.com/himera/tochka-voice/go-core/pkg/storage"
 )
+
+func TestMISLogsTimingWithoutPatientQueriesOrCredentials(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
+	defer server.Close()
+	client := NewRealMISClient(server.URL, "private-api-token")
+	client.limiter = rate.NewLimiter(rate.Inf, 1)
+	var output bytes.Buffer
+	client.events = slog.New(slog.NewJSONHandler(&output, nil))
+	if _, err := client.FindClients(context.Background(), "Иванов", "Иван", "12.03.1985"); err == nil {
+		t.Fatal("fixture error missing")
+	}
+	for _, secret := range []string{"Иванов", "Иван", "12.03.1985", "private-api-token", "birth_date", "last_name", "?"} {
+		if strings.Contains(output.String(), secret) {
+			t.Fatalf("MIS log leaked query/credential: %s", secret)
+		}
+	}
+	var event map[string]any
+	if err := json.Unmarshal(output.Bytes(), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event["status"] != float64(503) || event["resource"] != "/clients" || event["error_kind"] != "http" || event["queue_ms"] == nil || event["request_ms"] == nil {
+		t.Fatalf("missing MIS diagnostics: %v", event)
+	}
+}
 
 func TestDoctorsPaginationAndCache(t *testing.T) {
 	var requests atomic.Int32
