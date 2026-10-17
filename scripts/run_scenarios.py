@@ -25,7 +25,7 @@ load_dotenv(ROOT / ".env", override=False)
 
 
 @contextmanager
-def isolated_server(port: int = 18080):
+def isolated_server(port: int = 18085):
     """Spins up an isolated Go server with a clean mock database."""
     db_path = ROOT / "var" / f"scenario-runner-{uuid.uuid4().hex[:8]}.db"
     env = os.environ.copy()
@@ -119,7 +119,19 @@ def run_scenario(
 
     try:
         before_visits = client.visits()
-        init_res = client.start(caller_number=caller)
+        outbound_visit_id = scenario.get("outbound_visit_id", 0)
+        if scenario.get("setup_booking"):
+            setup = scenario["setup_booking"]
+            client.start(caller_number=setup.get("caller_number", ""))
+            for step_user in setup.get("turns", []):
+                client.turn(step_user)
+            client.end_call()
+            active_visits = client.visits()
+            if active_visits:
+                outbound_visit_id = active_visits[-1]["id"]
+            before_visits = active_visits
+
+        init_res = client.start(caller_number=caller, outbound_visit_id=outbound_visit_id)
         if verbose:
             print(f"[{scenario_id}] START → {init_res.get('state')} | {init_res.get('bot_speech')}")
 
@@ -271,8 +283,8 @@ def main():
     parser.add_argument(
         "--port",
         type=int,
-        default=18080,
-        help="Port for isolated server (default: 18080)",
+        default=18085,
+        help="Port for isolated server (default: 18085)",
     )
     parser.add_argument(
         "--stop-on-fail",

@@ -157,7 +157,7 @@ func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession,
 		return StepResult{NextState: s.CurrentState, BotSpeech: "Вы меня слышите?", keepPrompt: true}
 	}
 	if containsAny(norm, "не записывайте разговор", "против записи разговора", "без записи разговора", "отключите запись") {
-		return f.aside(s, "Аудиозапись не сохраняется. Продолжим.")
+		return f.aside(s, "Хорошо, запись разговора отключена, аудио не сохраняется. Продолжим.")
 	}
 	if containsAny(norm, "вы робот", "ты робот", "вы человек") {
 		return f.aside(s, "Да, я виртуальный помощник регистратуры. Могу соединить с сотрудником.")

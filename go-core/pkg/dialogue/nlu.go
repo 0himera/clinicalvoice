@@ -133,7 +133,7 @@ func (f *FSMController) nluInformation(ctx context.Context, s *models.CallSessio
 	if preserve {
 		return f.aside(s, answer), true
 	}
-	return say(StateFinal, answer), true
+	return say(StateFinal, answer+" Могу ещё чем-то помочь?"), true
 }
 
 func (f *FSMController) directory(s *models.CallSession, specialty string, next bool) StepResult {

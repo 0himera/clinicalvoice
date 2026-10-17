@@ -161,7 +161,7 @@
       },
       {
         "turn": 3,
-        "user": "Первый",
+        "user": "Давайте на восемь двадцать",
         "expected_state": "STATE_CONFIRM_BOOKING"
       },
       {
@@ -444,7 +444,7 @@
   {
     "id": "TC-12",
     "name": "Запись ребёнка законным представителем",
-    "category": "referral",
+    "category": "guardian",
     "description": "Пациент младше 18 лет требует подтверждения полномочий и записи к педиатру.",
     "steps": [
       {
@@ -484,7 +484,7 @@
   {
     "id": "TC-13",
     "name": "Отказ подтвердить статус представителя ребёнка",
-    "category": "referral",
+    "category": "guardian",
     "description": "Звонящий не является законным представителем -> перевод оператору (C-12).",
     "steps": [
       {
@@ -514,7 +514,7 @@
   {
     "id": "TC-14",
     "name": "Запись ребёнка к взрослому врачу мапится на детского",
-    "category": "referral",
+    "category": "guardian",
     "description": "Запрос взрослого офтальмолога для ребёнка автоматически выбирает детского офтальмолога.",
     "steps": [
       {
@@ -1150,7 +1150,7 @@
     "steps": [
       {
         "turn": 1,
-        "user": "Вызовите врача на дом для бабушки",
+        "user": "Вызовите врача на дом для дедушки",
         "expected_state": "STATE_AWAIT_IDENTITY",
         "expected_fragments": [
           "фамилию"
@@ -1211,8 +1211,11 @@
       },
       {
         "turn": 4,
-        "user": "Нет",
-        "expected_state": "STATE_HOME_REQUEST"
+        "user": "Нет, отмените вызов",
+        "expected_state": "STATE_FINAL",
+        "expected_fragments": [
+          "не передаю"
+        ]
       }
     ],
     "assertions": {
@@ -1321,6 +1324,7 @@
         "user": "Какие документы взять?",
         "expected_state": "STATE_CONFIRM_BOOKING",
         "expected_fragments": [
+          "паспорт",
           "полис"
         ]
       },
@@ -1361,7 +1365,8 @@
         "user": "Какой у вас адрес?",
         "expected_state": "STATE_CONFIRM_BOOKING",
         "expected_fragments": [
-          "Центральная"
+          "Центральная",
+          "дом семь"
         ]
       },
       {
@@ -1551,6 +1556,7 @@
         "user": "Я против записи разговора",
         "expected_state": "STATE_MAIN_MENU",
         "expected_fragments": [
+          "запись разговора отключена",
           "не сохраняется"
         ]
       },
@@ -1606,7 +1612,7 @@
   },
   {
     "id": "TC-42",
-    "name": "Красный флаг: младенец с высокой температурой (Категория B)",
+    "name": "Красный флаг: младенец с высокой температурой (Категория A)",
     "category": "safety",
     "description": "Неотложная помощь младенцу переводится на 104.",
     "steps": [
@@ -1675,7 +1681,8 @@
         "user": "В какие дни и часы вы работаете?",
         "expected_state": "STATE_FINAL",
         "expected_fragments": [
-          "семи тридцати"
+          "семи тридцати",
+          "дежурные терапевт и педиатр"
         ]
       }
     ],
@@ -1794,6 +1801,46 @@
     ],
     "assertions": {
       "visits_delta": 0
+    }
+  },
+  {
+    "id": "TC-51",
+    "name": "Исходящий звонок-напоминание о приёме",
+    "category": "outbound",
+    "description": "Напоминание о предстоящем приёме и подтверждение визита (С-10).",
+    "caller_number": "+79991112233",
+    "setup_booking": {
+      "caller_number": "+79991112233",
+      "turns": [
+        "Запишите к терапевту",
+        "Иванов Иван Иванович 12.03.1985",
+        "Первый",
+        "Да"
+      ]
+    },
+    "steps": [
+      {
+        "turn": 1,
+        "user": "Да, это я",
+        "expected_state": "STATE_REMINDER",
+        "expected_fragments": [
+          "Напоминаем о записи",
+          "Сможете подойти"
+        ]
+      },
+      {
+        "turn": 2,
+        "user": "Да, буду",
+        "expected_state": "STATE_DONE",
+        "expected_outcome": "CONFIRMED",
+        "expected_fragments": [
+          "Спасибо, запись подтверждена"
+        ]
+      }
+    ],
+    "assertions": {
+      "visits_delta": 0,
+      "expected_visit_status": "Запланирована"
     }
   }
 ]

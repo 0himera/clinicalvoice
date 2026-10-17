@@ -21,7 +21,7 @@ func (f *FSMController) schedule(ctx context.Context, s *models.CallSession, tex
 		}
 		if answer, ok := FAQ(question); ok {
 			s.FailCount = 0
-			return say(StateFinal, answer)
+			return say(StateFinal, answer+" Могу ещё чем-то помочь?")
 		}
 		if s.CurrentState == StateSchedule {
 			nlu := f.understand(ctx, text, StateSchedule)
