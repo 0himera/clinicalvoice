@@ -53,6 +53,9 @@ def isolated_server(port: int = 18080):
             "DECISION_MODEL_ENABLED": os.getenv("DECISION_MODEL_ENABLED", "true"),
         }
     )
+    xlsx_files = list((ROOT / "data").glob("*.xlsx"))
+    if xlsx_files:
+        env["SCHEDULE_PATH"] = str(xlsx_files[0])
     (ROOT / "var").mkdir(parents=True, exist_ok=True)
     log_path = ROOT / "var" / f"isolated-server-{port}.log"
     with log_path.open("w") as log:
