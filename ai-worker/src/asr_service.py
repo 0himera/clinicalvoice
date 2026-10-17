@@ -78,9 +78,9 @@ class RemoteWhisperASR:
         timeout: float = 15.0,
         fallback: FasterWhisperASR | None = None,
     ):
-        import requests
+        import httpx
 
-        self._requests = requests
+        self._httpx = httpx
         self.api_url = api_url or os.getenv(
             "ASR_API_URL", "https://hub.gigaschool.ru/api/v1/llm/v1/audio/transcriptions"
         )
@@ -97,7 +97,7 @@ class RemoteWhisperASR:
                 headers = {"Authorization": f"Bearer {self.api_key}"}
                 files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
                 data = {"model": self.model, "language": "ru"}
-                resp = self._requests.post(
+                resp = self._httpx.post(
                     self.api_url,
                     headers=headers,
                     files=files,
