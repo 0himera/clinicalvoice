@@ -80,8 +80,9 @@ def isolated_server(port: int = 18080):
                             break
                     except httpx.HTTPError:
                         if proc.poll() is not None or time.monotonic() > deadline:
+                            err_content = log_path.read_text() if log_path.exists() else "no log"
                             raise RuntimeError(
-                                f"Isolated server on port {port} failed to start. See {log_path}"
+                                f"Isolated server on port {port} failed to start: {err_content}"
                             ) from None
                         time.sleep(0.2)
             os.environ["CORE_URL"] = f"http://127.0.0.1:{port}"
