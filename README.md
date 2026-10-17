@@ -35,32 +35,38 @@
 Пайплайн разделен на два ключевых сервиса: **`ai-worker`** (Python, медиапоток и нейросети) и **`go-core`** (Go, логика, FSM, МИС, безопасность).
 
 ```mermaid
-flowchart LR
-    Caller(["Пациент / Софтфон"]) <-->|"SIP / RTP (G.711)"| Asterisk["Asterisk 20 PBX"]
-    Asterisk <-->|"FastAGI :4573 / AudioSocket :9092"| Worker["ai-worker (Python 3.12)"]
-    
-    subgraph AudioEngine["ai-worker: Речевой транспорт"]
-        VAD["Silero VAD (640ms reset)"]
-        ASR["Faster-Whisper ASR"]
-        TTS["Silero TTS (8 kHz PCM16)"]
-        BargeIn["Barge-in Controller"]
+flowchart TD
+    Caller(["Пациент (SIP / Софтфон)"]) <-->|"SIP / RTP (8 кГц G.711a/u)"| Asterisk["Asterisk 20 PBX (Диалплан)"]
+
+    Asterisk <-->|"AudioSocket :9092 & FastAGI :4573"| Worker
+
+    subgraph Worker[" 1. Речевой транспорт: ai-worker (Python 3.12 / :8000) "]
+        direction LR
+        VAD["Silero VAD\n(сброс 640мс тишины)"] -->|"Речь"| ASR["Faster-Whisper ASR\n(локальное распознавание)"]
+        TTS["Silero TTS v4\n(PCM16 8 кГц синтез)"] <-.->|"Аудиопоток"| BargeIn["Barge-in Controller\n(сброс буфера)"]
     end
 
-    Worker <-->|"HTTP /turn & /interrupt"| Core["go-core :8080"]
+    Worker <-->|"HTTP API :8080 (/turn, /interrupt & bot_speech)"| Core
 
-    subgraph GoEngine["go-core: Диалоговое ядро"]
-        SafetyGate{"Safety Fast-Gate"}
-        ParserNLU["Rule-based NLU / Stemmer"]
-        FSM["FSM Controller"]
-        SlotMgr["SlotManager (Held/Pending/Booked)"]
-        Campaign["Reminder Campaign Engine"]
-        Escalation["Escalations Outbox"]
+    subgraph Core[" 2. Диалоговое ядро: go-core (Go 1.22 / :8080) "]
+        direction LR
+        SafetyGate{"Safety Fast-Gate\n(R-04, 103/112)"} -->|"Штатный поток"| FSM["FSM Controller\n(Состояния C-01...C-10)"]
+        FSM -->|"Управление слотами"| SlotMgr["SlotManager\n(Held → Pending → Booked)"]
+        Campaign["Reminder Campaign\n(Исходящие вызовы)"] -.-> FSM
     end
 
-    ParserNLU -.->|"Неоднозначный интент"| LLM["Fallback NLU (Ollama / Gemini)"]
-    Core --> DB[("SQLite: WAL / Контакты / Outbox")]
-    SlotMgr <-->|"HTTPS REST API (GMT+4)"| MIS["МИС Клиники / Mock"]
-    Core -->|"AMI: Originate & Redirect"| Asterisk
+    subgraph Integrations[" 3. Инфраструктура, МИС и Хранилище "]
+        direction LR
+        AMI["Asterisk AMI\n(Редирект на 104)"]
+        DB[("SQLite WAL\n(контакты, outbox)")]
+        MIS["МИС Клиники\n(REST API GMT+4)"]
+        LLM["Fallback NLU\n(Ollama / Gemini)"]
+    end
+
+    Core -.->|"Экстренный вызов"| AMI
+    Core <-->|"Локальные сущности"| DB
+    SlotMgr <-->|"Бронирование / Отмена"| MIS
+    Core -.->|"Сложные реплики"| LLM
 ```
 
 ---
