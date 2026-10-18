@@ -31,10 +31,14 @@ class FasterWhisperASR:
         list(segments)
 
     def _transcribe(self, audio: np.ndarray) -> str:
-        if not 0 < len(audio) <= 30 * 16000:
-            raise ValueError("audio duration must be between zero and thirty seconds")
+        if len(audio) == 0:
+            return ""
+        if len(audio) > 30 * 16000:
+            audio = audio[: 30 * 16000]
         if not np.isfinite(audio).all():
-            raise ValueError("audio contains invalid samples")
+            audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
+        if len(audio) == 0 or np.abs(audio).max() < 1e-4:
+            return ""
         with self._lock:
             segments, _ = self.model.transcribe(
                 audio,
@@ -49,65 +53,31 @@ class FasterWhisperASR:
     def transcribe(self, pcm_16k_bytes: bytes) -> str:
         if not pcm_16k_bytes:
             return ""
-        return self._transcribe(
-            np.frombuffer(pcm_16k_bytes, dtype="<i2").astype(np.float32) / 32768
-        )
-
-    def transcribe_wav(self, wav_bytes: bytes) -> str:
-        with sf.SoundFile(io.BytesIO(wav_bytes)) as source:
-            if source.samplerate < 8000 or source.samplerate > 96000:
-                raise ValueError("unsupported sample rate")
-            if source.frames <= 0 or source.frames / source.samplerate > 30:
-                raise ValueError("audio must be at most thirty seconds")
-            if source.channels not in {1, 2}:
-                raise ValueError("audio must be mono or stereo")
-            sample_rate = source.samplerate
-            data = source.read(dtype="float32", always_2d=True).mean(axis=1)
-        if sample_rate != 16000:
-            factor = gcd(sample_rate, 16000)
-            data = resample_poly(data, 16000 // factor, sample_rate // factor).astype(np.float32)
-        return self._transcribe(data)
-
-
-class RemoteWhisperASR:
-    def __init__(
-        self,
-        api_url: str | None = None,
-        api_key: str | None = None,
-        model: str = "openai/whisper-large-v3",
-        timeout: float = 15.0,
-        fallback: FasterWhisperASR | None = None,
-    ):
-        import httpx
-
-        self._httpx = httpx
-        self.api_url = api_url or os.getenv(
-            "ASR_API_URL", "https://hub.gigaschool.ru/api/v1/llm/v1/audio/transcriptions"
-        )
-        self.api_key = api_key or os.getenv("ASR_API_KEY") or os.getenv("LLM_API_KEY")
-        self.model = os.getenv("ASR_API_MODEL", model)
-        self.timeout = timeout
-        self.fallback = fallback
+        try:
+            data = np.frombuffer(pcm_16k_bytes, dtype="<i2").astype(np.float32) / 32768
+            return self._transcribe(data)
+        except Exception:
+            return ""
 
     def transcribe_wav(self, wav_bytes: bytes) -> str:
         if not wav_bytes:
             return ""
-        if self.api_url and self.api_key:
+        sample_rate = 16000
+        data = np.array([], dtype=np.float32)
+        try:
+            with sf.SoundFile(io.BytesIO(wav_bytes)) as source:
+                sample_rate = source.samplerate
+                data = source.read(dtype="float32", always_2d=True).mean(axis=1)
+        except Exception:
             try:
-                headers = {"Authorization": f"Bearer {self.api_key}"}
-                files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
-                data = {"model": self.model, "language": "ru"}
-                resp = self._httpx.post(
-                    self.api_url,
-                    headers=headers,
-                    files=files,
-                    data=data,
-                    timeout=self.timeout,
-                )
-                if resp.status_code == 200:
-                    return resp.json().get("text", "").strip()
+                data = np.frombuffer(wav_bytes, dtype="<i2").astype(np.float32) / 32768
+                sample_rate = 8000
             except Exception:
-                pass
-        if self.fallback is not None:
-            return self.fallback.transcribe_wav(wav_bytes)
-        return ""
+                return ""
+
+        if len(data) == 0:
+            return ""
+        if sample_rate != 16000:
+            factor = gcd(sample_rate, 16000)
+            data = resample_poly(data, 16000 // factor, sample_rate // factor).astype(np.float32)
+        return self._transcribe(data)

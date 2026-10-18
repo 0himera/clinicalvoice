@@ -41,6 +41,21 @@ def main():
             f"[{username}]\nsecret={secret}\ndeny=0.0.0.0/0.0.0.0\npermit=127.0.0.1/255.255.255.255\n"
             "read=call\nwrite=originate,call\n"
         )
+    sip_password = os.getenv("SIP_TEST_PASSWORD", settings.get("SIP_TEST_PASSWORD", "testpass"))
+    operator_password = os.getenv(
+        "SIP_OPERATOR_PASSWORD", settings.get("SIP_OPERATOR_PASSWORD", "operatorpass")
+    )
+    pjsip_target = directory / "pjsip_auth.conf"
+    fd_sip = os.open(pjsip_target, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+    with os.fdopen(fd_sip, "w") as stream:
+        stream.write(
+            f"[test200](+)\npassword={sip_password}\n\n"
+            f"[101-auth](+)\npassword={operator_password}\n\n"
+            f"[102-auth](+)\npassword={operator_password}\n\n"
+            f"[103-auth](+)\npassword={operator_password}\n\n"
+            f"[104-auth](+)\npassword={operator_password}\n\n"
+            f"[105-auth](+)\npassword={operator_password}\n"
+        )
     print("Local configuration ready; secrets were not printed.")
 
 

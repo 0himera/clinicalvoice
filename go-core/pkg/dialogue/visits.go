@@ -57,6 +57,9 @@ func (f *FSMController) selectedVisit(ctx context.Context, s *models.CallSession
 			return f.transfer(ctx, s, "101", "C-03: врач деактивирован", "Врач недоступен. Соединяю с регистратором для подбора другого врача.")
 		}
 		s.Specialty = v.Doctor.Specialty
+		if s.RequestedDoctorID == 0 {
+			s.RequestedDoctorID = v.Doctor.ID
+		}
 		return f.offer(ctx, s)
 	default:
 		return say(StateFinal, fmt.Sprintf("Вы записаны: %s, %s. Могу ещё помочь?", v.Doctor.FullName, v.ScheduledAt))
@@ -88,7 +91,15 @@ func (f *FSMController) confirmCancel(ctx context.Context, s *models.CallSession
 		return f.systemFailure(ctx, s)
 	}
 	s.FailCount = 0
-	return StepResult{NextState: StateFinal, BotSpeech: "Ваша запись отменена. Могу ещё помочь?", Outcome: "CANCELLED"}
+	return StepResult{
+		NextState:   StateFinal,
+		BotSpeech:   "Ваша запись отменена. Могу ещё помочь?",
+		Outcome:     "CANCELLED",
+		Source:      "mis",
+		Confidence:  1.0,
+		Intent:      string(models.ScenarioCancel),
+		Explanation: fmt.Sprintf("Запись #%d успешно отменена в МИС", s.VisitID),
+	}
 }
 func (f *FSMController) StartReminder(ctx context.Context, s *models.CallSession, id int) StepResult {
 	v, err := f.misClient.GetVisit(ctx, id)
@@ -105,7 +116,14 @@ func (f *FSMController) StartReminder(ctx context.Context, s *models.CallSession
 	s.VisitID = id
 	s.CurrentScenario = models.ScenarioOutboundRemind
 	s.CurrentState = StateReminderIdentity
-	result := say(StateReminderIdentity, fmt.Sprintf("Здравствуйте! Поликлиника номер семь, виртуальный помощник. %s %s, это вы?", c.FirstName, c.MiddleName))
+	result := StepResult{
+		NextState:   StateReminderIdentity,
+		BotSpeech:   fmt.Sprintf("Здравствуйте! Поликлиника номер семь, виртуальный помощник. %s %s, это вы?", c.FirstName, c.MiddleName),
+		Source:      "campaign",
+		Confidence:  1.0,
+		Intent:      "OUTBOUND_REMINDER",
+		Explanation: fmt.Sprintf("Исходящее напоминание о записи #%d", id),
+	}
 	s.PendingPrompt = result.BotSpeech
 	return result
 }
@@ -149,5 +167,14 @@ func (f *FSMController) reminder(ctx context.Context, s *models.CallSession, tex
 	if _, err = f.misClient.UpdateClient(ctx, c.ID, models.ClientUpdate{Comment: &comment}); err != nil {
 		return f.systemFailure(ctx, s)
 	}
-	return StepResult{NextState: StateDone, BotSpeech: "Спасибо, запись подтверждена. Возьмите паспорт и полис. Всего доброго!", ShouldHangup: true, Outcome: "CONFIRMED"}
+	return StepResult{
+		NextState:   StateDone,
+		BotSpeech:   "Спасибо, запись подтверждена. Возьмите паспорт и полис. Всего доброго!",
+		ShouldHangup: true,
+		Outcome:     "CONFIRMED",
+		Source:      "mis",
+		Confidence:  1.0,
+		Intent:      "CONFIRM_REMINDER",
+		Explanation: fmt.Sprintf("Запись #%d подтверждена пациентом и отмечена в МИС", v.ID),
+	}
 }

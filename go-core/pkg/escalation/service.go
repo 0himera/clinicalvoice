@@ -52,23 +52,38 @@ func (s *Service) technicalClient(ctx context.Context) (int, error) {
 // Drain sends one job. A single worker owns this outbox; an interrupted SENDING
 // job is marked UNCERTAIN on restart rather than causing a duplicate POST.
 func (s *Service) Drain(ctx context.Context) error {
+	tx, err := s.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
 	var id, description string
 	var clientID int
-	err := s.store.DB.QueryRowContext(ctx, "SELECT id,client_id,description FROM escalations WHERE status='PENDING' ORDER BY created_at,id LIMIT 1").Scan(&id, &clientID, &description)
+	err = tx.QueryRowContext(ctx, "SELECT id,client_id,description FROM escalations WHERE status='PENDING' ORDER BY created_at,id LIMIT 1").Scan(&id, &clientID, &description)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	res, err := tx.ExecContext(ctx, "UPDATE escalations SET status='SENDING',attempts=attempts+1 WHERE id=? AND status='PENDING'", id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return nil
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+
 	if clientID == 0 {
 		clientID, err = s.technicalClient(ctx)
 		if err != nil {
+			_, _ = s.store.DB.ExecContext(context.WithoutCancel(ctx), "UPDATE escalations SET status='PENDING' WHERE id=? AND status='SENDING'", id)
 			return err
 		}
-	}
-	if _, err = s.store.DB.ExecContext(ctx, "UPDATE escalations SET status='SENDING',attempts=attempts+1 WHERE id=?", id); err != nil {
-		return err
 	}
 	e, sendErr := s.mis.CreateEscalation(ctx, models.EscalationCreate{ClientID: clientID, Description: description})
 	status := "SENT"
@@ -84,7 +99,7 @@ func (s *Service) Drain(ctx context.Context) error {
 	} else {
 		misID = e.ID
 	}
-	_, err = s.store.DB.ExecContext(context.WithoutCancel(ctx), "UPDATE escalations SET status=?,mis_id=? WHERE id=?", status, misID, id)
+	_, err = s.store.DB.ExecContext(context.WithoutCancel(ctx), "UPDATE escalations SET status=?,mis_id=? WHERE id=? AND status='SENDING'", status, misID, id)
 	return errors.Join(sendErr, err)
 }
 

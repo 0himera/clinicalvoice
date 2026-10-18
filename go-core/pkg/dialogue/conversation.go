@@ -183,7 +183,15 @@ func (f *FSMController) aside(s *models.CallSession, answer string) StepResult {
 	if activeTask(state) {
 		answer += " " + pendingPrompt(s)
 	}
-	return StepResult{NextState: state, BotSpeech: answer, keepPrompt: true}
+	return StepResult{
+		NextState:   state,
+		BotSpeech:   answer,
+		keepPrompt:  true,
+		Source:      "faq",
+		Confidence:  1.0,
+		Intent:      "FAQ",
+		Explanation: "Ответ на справочный или попутный вопрос пациента",
+	}
 }
 
 // This is the approved primary-care script, independent of the reported symptom.

@@ -101,6 +101,10 @@ func New(cfg Config) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.health)
+	mux.HandleFunc("GET /health", s.health)
+	mux.HandleFunc("HEAD /healthz", s.health)
+	mux.HandleFunc("HEAD /readyz", s.health)
+	mux.HandleFunc("HEAD /health", s.health)
 	mux.HandleFunc("POST /api/dialogue/start", s.start)
 	mux.HandleFunc("POST /api/dialogue/turn", s.turn)
 	mux.HandleFunc("POST /api/dialogue/{id}/end", s.end)
@@ -116,7 +120,9 @@ func New(cfg Config) *Server {
 	s.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Cache-Control", "no-store")
-		if cfg.Token != "" && r.URL.Path != "/healthz" {
+		cleanPath := strings.TrimSuffix(r.URL.Path, "/")
+		isHealth := cleanPath == "/healthz" || cleanPath == "/readyz" || cleanPath == "/health"
+		if cfg.Token != "" && !isHealth {
 			want := sha256.Sum256([]byte(cfg.Token))
 			got := sha256.Sum256([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
 			if subtle.ConstantTimeCompare(want[:], got[:]) != 1 {

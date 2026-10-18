@@ -47,6 +47,13 @@ func (f *FSMController) offer(ctx context.Context, s *models.CallSession) StepRe
 	if err != nil {
 		return f.systemFailure(ctx, s)
 	}
+	if len(options) == 0 && q.DoctorID > 0 {
+		q.DoctorID = 0
+		options, err = f.slotMgr.Available(ctx, q)
+		if err != nil {
+			return f.systemFailure(ctx, s)
+		}
+	}
 	if len(options) == 0 {
 		return f.transfer(ctx, s, "101", "C-11: нет подходящих свободных слотов, требуется лист ожидания", "Подходящего свободного времени нет. Передаю регистратору запрос на лист ожидания.")
 	}
@@ -235,7 +242,15 @@ func (f *FSMController) confirmBooking(ctx context.Context, s *models.CallSessio
 					}
 					if asideSpeech != "" {
 						botSpeech := asideSpeech + " Подтверждаете выбранное время? Скажите да или нет."
-						return StepResult{NextState: StateConfirmBooking, BotSpeech: botSpeech, keepPrompt: true}
+						return StepResult{
+							NextState:   StateConfirmBooking,
+							BotSpeech:   botSpeech,
+							keepPrompt:  true,
+							Source:      "decision_model",
+							Confidence:  conf,
+							Intent:      asideChoice,
+							Explanation: fmt.Sprintf("Ответ на вопрос (%s) и запрос подтверждения", asideChoice),
+						}
 					}
 				}
 				if conf >= 0.88 {
@@ -251,9 +266,13 @@ func (f *FSMController) confirmBooking(ctx context.Context, s *models.CallSessio
 					if !s.SoftClarified {
 						s.SoftClarified = true
 						return StepResult{
-							NextState:  StateConfirmBooking,
-							BotSpeech:  "Уточните, пожалуйста: вы подтверждаете запись на это время? Скажите да или нет.",
-							keepPrompt: true,
+							NextState:   StateConfirmBooking,
+							BotSpeech:   "Уточните, пожалуйста: вы подтверждаете запись на это время? Скажите да или нет.",
+							keepPrompt:  true,
+							Source:      "decision_model",
+							Confidence:  conf,
+							Intent:      confirmChoice,
+							Explanation: fmt.Sprintf("Мягкое уточнение согласия при вероятности %.2f", conf),
 						}
 					}
 				}
@@ -307,6 +326,9 @@ func (f *FSMController) confirmBooking(ctx context.Context, s *models.CallSessio
 		}
 		return f.systemFailure(ctx, s)
 	}
+	if s.CurrentScenario == models.ScenarioReschedule {
+		_ = f.slotMgr.Cancel(context.WithoutCancel(ctx), s.VisitID)
+	}
 	if err = f.slotMgr.Resolve(context.WithoutCancel(ctx), slot, s.CallID, visit.ID, false); err != nil {
 		return f.systemFailure(ctx, s)
 	}
@@ -327,5 +349,17 @@ func (f *FSMController) confirmBooking(ctx context.Context, s *models.CallSessio
 		state = StateReminderConsent
 		speech += " Можно напомнить о приёме звонком на этот номер?"
 	}
-	return StepResult{NextState: state, BotSpeech: speech, Outcome: outcome}
+	explanation := fmt.Sprintf("Запись успешно создана в МИС (ID: %d)", visit.ID)
+	if s.CurrentScenario == models.ScenarioReschedule {
+		explanation = fmt.Sprintf("Запись успешно перенесена в МИС (ID: %d)", visit.ID)
+	}
+	return StepResult{
+		NextState:   state,
+		BotSpeech:   speech,
+		Outcome:     outcome,
+		Source:      "mis",
+		Confidence:  1.0,
+		Intent:      string(s.CurrentScenario),
+		Explanation: explanation,
+	}
 }

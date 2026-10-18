@@ -9,6 +9,7 @@ services:
       - ./asterisk/rtp.conf:/etc/asterisk/rtp.conf:ro
       - ./asterisk/http.conf:/etc/asterisk/http.conf:ro
       - ./var/asterisk/manager.conf:/etc/asterisk/manager.conf:ro
+      - ./var/asterisk/pjsip_auth.conf:/etc/asterisk/pjsip_auth.conf:ro
     healthcheck:
       test: ["CMD", "asterisk", "-rx", "core show uptime"]
       interval: 15s

@@ -191,11 +191,11 @@ func (r *Runner) dispatch(ctx context.Context, id int, now time.Time) error {
 
 func (r *Runner) Outcome(ctx context.Context, id int, status string) error {
 	switch status {
-	case "CONFIRMED", "RESCHEDULED", "CANCELLED", "WRONG_PERSON", "STALE", "OPTED_OUT":
+	case "CONFIRMED", "RESCHEDULED", "CANCELLED", "WRONG_PERSON", "STALE", "OPTED_OUT", "TRANSFERRED":
 	default:
 		return nil
 	}
-	_, err := r.store.DB.ExecContext(ctx, "UPDATE reminders SET status=?,lease_until=0 WHERE visit_id=? AND status='DIALING'", status, id)
+	_, err := r.store.DB.ExecContext(ctx, "UPDATE reminders SET status=?,lease_until=0 WHERE visit_id=? AND status IN ('DIALING', 'PENDING', 'NO_ANSWER')", status, id)
 	return err
 }
 func (r *Runner) Run(ctx context.Context) {

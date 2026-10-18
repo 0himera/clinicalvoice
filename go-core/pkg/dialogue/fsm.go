@@ -37,15 +37,19 @@ const (
 )
 
 type StepResult struct {
-	BotSpeech        string `json:"bot_speech"`
-	NextState        string `json:"state"`
-	ShouldHangup     bool   `json:"should_hangup"`
-	TransferTarget   string `json:"transfer_target,omitempty"`
-	LLMUsed          bool   `json:"llm_used"`
-	Outcome          string `json:"outcome,omitempty"`
-	EscalationQueued bool   `json:"escalation_queued,omitempty"`
-	ReasonCode       string `json:"reason_code,omitempty"`
-	DiagnosticCode   string `json:"-"`
+	BotSpeech        string  `json:"bot_speech"`
+	NextState        string  `json:"state"`
+	ShouldHangup     bool    `json:"should_hangup"`
+	TransferTarget   string  `json:"transfer_target,omitempty"`
+	LLMUsed          bool    `json:"llm_used"`
+	Outcome          string  `json:"outcome,omitempty"`
+	EscalationQueued bool    `json:"escalation_queued,omitempty"`
+	ReasonCode       string  `json:"reason_code,omitempty"`
+	DiagnosticCode   string  `json:"-"`
+	Source           string  `json:"source,omitempty"`
+	Confidence       float64 `json:"confidence,omitempty"`
+	Intent           string  `json:"intent,omitempty"`
+	Explanation      string  `json:"explanation,omitempty"`
 	keepPrompt       bool
 }
 
@@ -76,12 +80,35 @@ func (f *FSMController) Gate() *safety.FastGate               { return f.gate }
 func (f *FSMController) SetEscalator(fn EscalateFunc)       { f.escalate = fn }
 func (f *FSMController) SetContactSaver(fn SaveContactFunc) { f.saveContact = fn }
 func (f *FSMController) InitialGreeting() StepResult {
-	return say(StateMenu, "Здравствуйте! Регистратура поликлиники номер семь, виртуальный помощник. Чем могу помочь?")
+	return StepResult{
+		NextState:   StateMenu,
+		BotSpeech:   "Здравствуйте! Регистратура поликлиники номер семь, виртуальный помощник. Чем могу помочь?",
+		Source:      "rule_fsm",
+		Confidence:  1.0,
+		Intent:      "GREETING",
+		Explanation: "Начальное приветствие регистратуры",
+	}
 }
-func say(state, speech string) StepResult { return StepResult{NextState: state, BotSpeech: speech} }
+func say(state, speech string) StepResult {
+	return StepResult{
+		NextState:   state,
+		BotSpeech:   speech,
+		Source:      "rule_fsm",
+		Confidence:  1.0,
+		Explanation: fmt.Sprintf("Диалоговый переход в состояние %s", state),
+	}
+}
 
 func (f *FSMController) transfer(ctx context.Context, s *models.CallSession, target, reason, speech string) StepResult {
-	r := StepResult{NextState: StateTransfer, BotSpeech: speech, TransferTarget: target, Outcome: "TRANSFERRED"}
+	r := StepResult{
+		NextState:      StateTransfer,
+		BotSpeech:      speech,
+		TransferTarget: target,
+		Outcome:        "TRANSFERRED",
+		Source:         "safety_gate",
+		Confidence:     1.0,
+		Explanation:    "Перевод вызова на оператора: " + reason,
+	}
 	r.ReasonCode, _, _ = strings.Cut(reason, ":")
 	s.TransferTarget = target
 	if err := f.slotMgr.Release(ctx, s.CallID); err != nil {
@@ -127,6 +154,48 @@ func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession,
 		s.NLUIntent = understanding.intent
 		s.NLULatencyMS = understanding.latency
 		s.NLUError = understanding.failure
+
+		// Guarantee non-empty BotSpeech for caller to avoid dead air
+		if result.BotSpeech == "" && !result.ShouldHangup {
+			if s.PendingPrompt != "" {
+				result.BotSpeech = s.PendingPrompt
+			} else {
+				result.BotSpeech = "Чем могу помочь?"
+			}
+		}
+
+		// Ensure response metadata fields are always populated
+		if result.Source == "" {
+			if result.LLMUsed {
+				result.Source = "nlu"
+			} else {
+				result.Source = "rule_fsm"
+			}
+		}
+		if result.Confidence == 0 {
+			result.Confidence = 1.0
+		}
+		if result.Intent == "" {
+			if s.NLUIntent != "" {
+				result.Intent = s.NLUIntent
+			} else {
+				parsed := ParseIntent(input)
+				if parsed != "" && parsed != IntentUnknown {
+					result.Intent = string(parsed)
+				} else {
+					result.Intent = "UNKNOWN"
+				}
+			}
+		}
+		if result.Explanation == "" {
+			if result.TransferTarget != "" {
+				result.Explanation = fmt.Sprintf("Перевод на оператора %s (причина: %s)", result.TransferTarget, result.ReasonCode)
+			} else if result.Outcome != "" {
+				result.Explanation = fmt.Sprintf("Завершение шага со статусом %s", result.Outcome)
+			} else {
+				result.Explanation = fmt.Sprintf("Переход в состояние %s (сценарий: %s)", result.NextState, s.CurrentScenario)
+			}
+		}
 	}()
 	text := strings.TrimSpace(input)
 	norm := normalized(text)

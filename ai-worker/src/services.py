@@ -69,14 +69,16 @@ class Services:
 
 
 def load_services(requested_device: str, settings: Any = None) -> Services:
-    import os
+    import logging
 
     import torch
 
-    from src.asr_service import FasterWhisperASR, RemoteWhisperASR
-    from src.decision import create_decision_engine
+    from src.asr_service import FasterWhisperASR
+    from src.decision import DisabledDecisionEngine, create_decision_engine
     from src.tts_service import SileroTTSService
     from src.vad_service import SileroVADService
+
+    logger = logging.getLogger("ai_worker.services")
 
     device = requested_device
     if device == "auto":
@@ -84,33 +86,36 @@ def load_services(requested_device: str, settings: Any = None) -> Services:
     if device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is unavailable")
 
-    decision_engine = create_decision_engine(settings)
-    decision_engine.warmup()
+    # 1. Independent VAD initialization
+    logger.info("Initializing VAD service...")
+    vad = SileroVADService()
 
+    # 2. Independent TTS initialization
+    logger.info("Initializing TTS service on %s...", device)
     tts = SileroTTSService(device=device)
     try:
         tts.synthesize("прогрев", 8000)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("TTS warmup notice: %s", exc)
 
-    asr_provider = os.getenv("ASR_PROVIDER", "local").lower()
-    if asr_provider in ("api", "remote") or (
-        os.getenv("ASR_API_URL") and (os.getenv("ASR_API_KEY") or os.getenv("LLM_API_KEY"))
-    ):
-        fallback = None
-        if os.getenv("ASR_LOCAL_FALLBACK", "false") == "true":
-            try:
-                fallback = FasterWhisperASR(device=device)
-            except Exception:
-                pass
-        asr = RemoteWhisperASR(fallback=fallback)
-    else:
-        asr = FasterWhisperASR(device=device)
+    # 3. Independent ASR initialization
+    logger.info("Initializing FasterWhisper ASR on %s...", device)
+    asr = FasterWhisperASR(device=device)
+
+    # 4. Independent Decision Engine initialization (failure does not break core voice pipeline)
+    decision_engine = None
+    try:
+        logger.info("Initializing Decision engine...")
+        decision_engine = create_decision_engine(settings)
+        decision_engine.warmup()
+    except Exception as exc:
+        logger.error("Decision engine failed to initialize: %s. Using DisabledDecisionEngine.", exc)
+        decision_engine = DisabledDecisionEngine(str(exc))
 
     return Services(
         asr=asr,
         tts=tts,
-        vad=SileroVADService(),
+        vad=vad,
         decision=decision_engine,
         device=device,
     )

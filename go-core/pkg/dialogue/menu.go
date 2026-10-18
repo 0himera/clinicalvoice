@@ -15,7 +15,7 @@ func (f *FSMController) menu(ctx context.Context, s *models.CallSession, text st
 	requested := f.extractDoctor(text)
 	specialty := f.extractSpecialty(text)
 	doctorSchedule := intent == IntentSchedule && scheduleQuestion(normalized(text)) && (requested != nil || f.extractSpecialty(text) != "")
-	if answer, ok := FAQ(text); ok && !doctorSchedule {
+	if answer, ok := FAQ(text); ok && !doctorSchedule && intent != IntentHomeVisit {
 		s.FailCount = 0
 		return say(StateFinal, answer+" Могу ещё чем-то помочь?")
 	}

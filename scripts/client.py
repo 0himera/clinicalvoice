@@ -32,16 +32,18 @@ class VoiceClient:
         )
         self.call_id = ""
 
-    def wait_ready(self, timeout: float = 45):
+    def wait_ready(self, timeout: float = 45, check_ai: bool = True):
         deadline = time.monotonic() + timeout
         while True:
             try:
                 self.core.get("/healthz").raise_for_status()
-                self.ai.get("/health").raise_for_status()
+                if check_ai:
+                    self.ai.get("/health").raise_for_status()
                 return
             except httpx.HTTPError:
                 if time.monotonic() >= deadline:
-                    raise RuntimeError("core or speech service did not become ready") from None
+                    target = "core or speech service" if check_ai else "core service"
+                    raise RuntimeError(f"{target} did not become ready") from None
                 time.sleep(0.25)
 
     @staticmethod

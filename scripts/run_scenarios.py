@@ -354,7 +354,7 @@ def main():
 
     try:
         client = VoiceClient()
-        client.wait_ready(timeout=25)
+        client.wait_ready(timeout=25, check_ai=args.voice)
 
         for s in selected:
             scenario_id = s["id"]

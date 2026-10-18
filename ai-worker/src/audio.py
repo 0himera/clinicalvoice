@@ -1,5 +1,3 @@
-"""AudioSocket framing and per-call endpoint detection, independent of models."""
-
 import io
 import struct
 import wave
@@ -24,10 +22,34 @@ def pcm_to_wav(pcm: bytes) -> bytes:
 
 
 def wav_to_pcm(audio: bytes) -> bytes:
-    with wave.open(io.BytesIO(audio), "rb") as source:
-        if (source.getnchannels(), source.getsampwidth(), source.getframerate()) != (1, 2, 8000):
-            raise ValueError("telephone output must be PCM16 mono at 8 kHz")
-        return source.readframes(source.getnframes())
+    try:
+        with wave.open(io.BytesIO(audio), "rb") as source:
+            if (source.getnchannels(), source.getsampwidth(), source.getframerate()) == (
+                1,
+                2,
+                8000,
+            ):
+                return source.readframes(source.getnframes())
+    except Exception:
+        pass
+
+    try:
+        from math import gcd
+
+        import numpy as np
+        import soundfile as sf
+        from scipy.signal import resample_poly
+
+        with sf.SoundFile(io.BytesIO(audio)) as source:
+            data = source.read(dtype="float32", always_2d=True).mean(axis=1)
+            rate = source.samplerate
+            if rate != 8000:
+                factor = gcd(rate, 8000)
+                data = resample_poly(data, 8000 // factor, rate // factor).astype(np.float32)
+            pcm16 = (np.clip(data, -1.0, 1.0) * 32767).astype("<i2")
+            return pcm16.tobytes()
+    except Exception:
+        return b""
 
 
 class ResettingVAD:

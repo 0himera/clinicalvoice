@@ -368,6 +368,9 @@ func excelDate(s string) (time.Time, error) {
 	if t, e := time.ParseInLocation("02.01.2006", s, models.ClinicLocation); e == nil {
 		return t, nil
 	}
+	if t, e := time.ParseInLocation("2006-01-02", s, models.ClinicLocation); e == nil {
+		return t, nil
+	}
 	n, e := strconv.ParseFloat(s, 64)
 	if e != nil || n < 61 || n > 100000 {
 		return time.Time{}, fmt.Errorf("invalid Excel date %q", s)

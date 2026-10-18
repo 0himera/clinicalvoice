@@ -44,7 +44,8 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
 
     @app.middleware("http")
     async def authenticate(request: Request, call_next):
-        if settings.api_token and request.url.path != "/health":
+        path = request.url.path.rstrip("/")
+        if settings.api_token and path not in ("/health", "/healthz", "/readyz"):
             expected = "Bearer " + settings.api_token
             if not secrets.compare_digest(request.headers.get("authorization", ""), expected):
                 return Response(status_code=401, headers={"WWW-Authenticate": "Bearer"})
@@ -54,6 +55,8 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
         return response
 
     @app.get("/health")
+    @app.get("/healthz")
+    @app.get("/readyz")
     async def health():
         ready = getattr(app.state, "services", None)
         if ready is None:
@@ -72,7 +75,9 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
         await file.close()
         if len(audio) > MAX_AUDIO_BYTES:
             raise HTTPException(413, "audio exceeds four MiB")
-        if not audio.startswith(b"RIFF"):
+        if not audio or len(audio) < 12:
+            raise HTTPException(422, "invalid audio file")
+        if file.filename and file.filename.endswith(".wav") and not audio.startswith(b"RIFF"):
             raise HTTPException(422, "a WAV file is required")
         started = time.perf_counter()
         try:

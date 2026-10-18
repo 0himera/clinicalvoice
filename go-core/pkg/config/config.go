@@ -127,12 +127,17 @@ func Load() (Config, error) {
 		return c, fmt.Errorf("demo calling-window override is forbidden with MIS_API_TOKEN")
 	}
 	if c.Schedule == "" {
-		paths, e := filepath.Glob("data/*.xlsx")
-		if e != nil {
-			return c, e
+		candidates := []string{"data/*.xlsx", "../data/*.xlsx", "../../data/*.xlsx"}
+		var paths []string
+		for _, pattern := range candidates {
+			p, e := filepath.Glob(pattern)
+			if e == nil && len(p) > 0 {
+				paths = p
+				break
+			}
 		}
-		if len(paths) != 1 {
-			return c, fmt.Errorf("set SCHEDULE_PATH to the organizer's workbook")
+		if len(paths) == 0 {
+			return c, fmt.Errorf("set SCHEDULE_PATH to the organizer's workbook (checked data/*.xlsx, ../data/*.xlsx)")
 		}
 		c.Schedule = paths[0]
 	}
