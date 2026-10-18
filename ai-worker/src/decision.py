@@ -32,8 +32,8 @@ class DecisionEngine(Protocol):
         ...
 
 
-def _fast_doctor_excerpt(target_text: str, q_text: str = "") -> dict[str, Any] | None:
-    """Fast substring extractor for doctor names/specialties without hardcoding doctor surnames."""
+def _mock_doctor_excerpt(target_text: str, q_text: str = "") -> dict[str, Any] | None:
+    """Fixture-only excerpts. The real engine always asks THX-01 for spans."""
     q_lower = q_text.lower()
     is_surname_only = any(k in q_lower for k in ("surname", "фамил"))
     is_specialty_only = any(k in q_lower for k in ("special", "специальн"))
@@ -119,10 +119,7 @@ def _fast_doctor_excerpt(target_text: str, q_text: str = "") -> dict[str, Any] |
 
 
 def _is_vital_threat(target_text: str) -> tuple[bool, float]:
-    """Evaluates whether target_text expresses an acute vital medical threat.
-
-    Synchronized with go-core/pkg/safety/fast_gate.go RedFlag Category A triggers.
-    """
+    """Fixture-only answers, never a substitute for the Go safety gate."""
     t_lower = target_text.lower()
 
     # Metaphors
@@ -274,6 +271,7 @@ def _is_vital_threat(target_text: str) -> tuple[bool, float]:
 
 
 class THX01Engine:
+    model_name = "THX-01"
     """Wrapper around doofz/THX-01 decision model with isolated thread executor."""
 
     def __init__(self, device: str = "cpu", model_path: str = "doofz/THX-01"):
@@ -283,7 +281,7 @@ class THX01Engine:
         self.device = device
         self.model_path = model_path
         if device == "cpu":
-            threads = int(os.getenv("THX01_NUM_THREADS", "4"))
+            threads = int(os.getenv("DECISION_THREADS", os.getenv("THX01_NUM_THREADS", "4")))
             try:
                 torch.set_num_interop_threads(1)
             except RuntimeError:
@@ -300,59 +298,32 @@ class THX01Engine:
         )
         self.agent = thx01.load(model_path, device=device, half=half)
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="thx01-worker")
+        self._capacity = asyncio.Semaphore(1)
 
     def decide(self, state: Any, questions: dict[str, Any]) -> dict[str, Any]:
         import torch
         from thx01.decide import decide as run_decide
 
-        target_text = ""
-        if isinstance(state, str):
-            target_text = state
-        elif isinstance(state, dict):
-            for k in (
-                "patient_utterance",
-                "patient_preference",
-                "реплика_пациента",
-                "ответ_пациента",
-            ):
-                if k in state and isinstance(state[k], str):
-                    target_text = state[k]
-                    break
-            if not target_text:
-                target_text = " ".join(str(v) for v in state.values())
-
-        fast_answers = {}
-        eval_questions = dict(questions)
-        for qid, q in list(questions.items()):
-            if q.get("type") == "excerpt":
-                q_text = str(q.get("question", "")).lower()
-                if any(
-                    k in q_text
-                    for k in ("surname", "doctor", "specialist", "специалист", "фамил", "врач")
-                ):
-                    extracted = _fast_doctor_excerpt(target_text, q_text)
-                    if extracted:
-                        fast_answers[qid] = extracted
-                        eval_questions.pop(qid, None)
-
         with torch.inference_mode():
-            if eval_questions:
-                res = run_decide(self.agent, state, eval_questions)
-                if isinstance(res, dict) and "answers" in res and isinstance(res["answers"], dict):
-                    answers = dict(res["answers"])
-                elif isinstance(res, dict):
-                    answers = dict(res)
-                else:
-                    answers = {}
-            else:
-                answers = {}
-
-            answers.update(fast_answers)
-            return answers
+            res = run_decide(self.agent, state, questions)
+        if isinstance(res, dict) and isinstance(res.get("answers"), dict):
+            return dict(res["answers"])
+        return dict(res) if isinstance(res, dict) else {}
 
     async def decide_async(self, state: Any, questions: dict[str, Any]) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._executor, self.decide, state, questions)
+        await self._capacity.acquire()
+        future = loop.run_in_executor(self._executor, self.decide, state, questions)
+
+        def finished(done):
+            self._capacity.release()
+            if not done.cancelled():
+                done.exception()
+
+        future.add_done_callback(finished)
+        # Cancelling the request stops waiting; native inference retains its
+        # capacity until completion. No unbounded executor backlog is created.
+        return await asyncio.shield(future)
 
     def warmup(self) -> None:
         import torch
@@ -381,7 +352,7 @@ class THX01Engine:
         )
 
     def close(self) -> None:
-        self._executor.shutdown(wait=False)
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _has_word(text: str, word: str) -> bool:
@@ -396,6 +367,7 @@ def _any_word(text: str, words: tuple[str, ...]) -> bool:
 
 
 class FakeDecisionEngine:
+    model_name = "mock"
     """Fast, deterministic semantic decision engine for CI and unit tests without GPU or downloads."""
 
     def __init__(self, device: str = "cpu"):
@@ -922,7 +894,7 @@ class FakeDecisionEngine:
                         best_score = opt_score
                         best_choice = opt_key
 
-                # Softmax normalization
+                # Normalize fixture heuristic weights (not model probabilities)
                 total = sum(scores.values()) or 1.0
                 probs = {k: round(v / total, 4) for k, v in scores.items()}
 
@@ -935,7 +907,7 @@ class FakeDecisionEngine:
                 }
 
             elif qtype == "noul":
-                # Binary boolean calibrated probability P(true)
+                # Synthetic boolean scores for fixtures; not clinical calibration
                 q_text = str(q.get("question", "")).lower()
                 p_true = 0.05
                 if any(k in q_text for k in ("threat", "vital", "acute", "угроз", "жизн", "остр")):
@@ -961,7 +933,7 @@ class FakeDecisionEngine:
                     k in q_text
                     for k in ("surname", "doctor", "specialist", "специалист", "фамил", "врач")
                 ):
-                    extracted = _fast_doctor_excerpt(target_text, q_text)
+                    extracted = _mock_doctor_excerpt(target_text, q_text)
                     if extracted:
                         span_text = extracted["text"]
                         start_idx = extracted["start"]
@@ -994,6 +966,7 @@ class FakeDecisionEngine:
 
 
 class DisabledDecisionEngine:
+    model_name = "disabled"
     """Decision engine returned when THX-01 is disabled or failed to initialize in production.
 
     Raises RuntimeError on decide/decide_async to prevent silent fail-open.

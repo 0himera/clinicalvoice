@@ -155,3 +155,40 @@ func TestMockDeactivatedDoctorAllowsOnlyCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestBackgroundQuotaYieldsToQueuedForegroundRequest(t *testing.T) {
+	client := NewRealMISClient("https://example.invalid", "fixture")
+	client.limiter = rate.NewLimiter(rate.Every(40*time.Millisecond), 1)
+	if !client.limiter.Allow() {
+		t.Fatal("missing initial token")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	order := make(chan string, 2)
+	go func() {
+		if err := client.waitQuota(ctx); err == nil {
+			order <- "foreground"
+		}
+	}()
+	for client.foreground.Load() == 0 {
+		if ctx.Err() != nil {
+			t.Fatal(ctx.Err())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	go func() {
+		if err := client.waitQuota(Background(ctx)); err == nil {
+			order <- "background"
+		}
+	}()
+	for _, want := range []string{"foreground", "background"} {
+		select {
+		case got := <-order:
+			if got != want {
+				t.Fatalf("quota priority: got %s want %s", got, want)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+}

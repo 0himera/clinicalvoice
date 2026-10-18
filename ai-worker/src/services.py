@@ -33,7 +33,6 @@ class Services:
     decision: Decision | None = None
     device: str = "test"
     asr_capacity: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(2))
-    tts_capacity: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(2))
     tts_instances: list[TTS] | None = None
     _work: set[asyncio.Task] = field(default_factory=set)
     tts_pool: asyncio.Queue[TTS] | None = None
@@ -44,17 +43,15 @@ class Services:
 
     def _get_tts_pool(self) -> asyncio.Queue[TTS]:
         if self.tts_pool is None:
+            instances = self.tts_instances or [self.tts]
+            if len({id(model) for model in instances}) != len(instances):
+                raise ValueError("TTS pool requires distinct model instances")
             self.tts_pool = asyncio.Queue()
-            if self.tts_instances:
-                for inst in self.tts_instances:
-                    self.tts_pool.put_nowait(inst)
-            elif self.tts is not None:
-                count = getattr(self.tts_capacity, "_value", 2)
-                for _ in range(count):
-                    self.tts_pool.put_nowait(self.tts)
+            for model in instances:
+                self.tts_pool.put_nowait(model)
         return self.tts_pool
 
-    async def _run(self, sem: asyncio.Semaphore | None, function, *args):
+    async def _run(self, sem: asyncio.Semaphore | None, function, *args, release=None):
         if sem:
             await sem.acquire()
         task = asyncio.create_task(asyncio.to_thread(function, *args))
@@ -63,16 +60,16 @@ class Services:
         def finished(done):
             if sem:
                 sem.release()
+            if release is not None:
+                release()
             self._work.discard(done)
             if not done.cancelled():
                 done.exception()  # retrieve errors even if the HTTP caller disconnected
 
         task.add_done_callback(finished)
-        try:
-            return await task
-        except asyncio.CancelledError:
-            task.cancel()
-            raise
+        # Cancelling a Python Future cannot stop native inference. Keep both its
+        # capacity and model lease until the actual thread has returned.
+        return await asyncio.shield(task)
 
     async def transcribe(self, audio: bytes) -> str:
         return await self._run(self.asr_capacity, self.asr.transcribe_wav, audio)
@@ -82,13 +79,23 @@ class Services:
     ) -> bytes:
         pool = self._get_tts_pool()
         model = await pool.get()
-        try:
-            return await self._run(None, model.synthesize, text, sample_rate, speaker)
-        finally:
-            pool.put_nowait(model)
+        return await self._run(
+            None,
+            model.synthesize,
+            text,
+            sample_rate,
+            speaker,
+            release=lambda: pool.put_nowait(model),
+        )
 
-    async def close(self):
-        await asyncio.gather(*self._work, return_exceptions=True)
+    async def close(self, grace_period: float = 5):
+        if self._work:
+            # Bound application shutdown without pretending to terminate native
+            # threads or releasing their leases before they finish.
+            await asyncio.wait(self._work, timeout=grace_period)
+        close = getattr(self.decision, "close", None)
+        if close is not None:
+            close()
 
 
 def load_services(requested_device: str, settings: Any = None) -> Services:

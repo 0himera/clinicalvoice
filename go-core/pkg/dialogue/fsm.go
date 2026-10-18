@@ -72,11 +72,8 @@ func NewFSMController(sm *slotmgr.SlotManager, mc misclient.MISClient) *FSMContr
 func (f *FSMController) SetLLMClient(c *llmclient.UniversalLLMClient) { f.llmClient = c }
 func (f *FSMController) SetDecisionClient(c *llmclient.DecisionClient) {
 	f.decisionClient = c
-	if f.gate != nil && c != nil {
-		f.gate.SetThreatDecider(c)
-	}
 }
-func (f *FSMController) Gate() *safety.FastGate               { return f.gate }
+func (f *FSMController) Gate() *safety.FastGate             { return f.gate }
 func (f *FSMController) SetEscalator(fn EscalateFunc)       { f.escalate = fn }
 func (f *FSMController) SetContactSaver(fn SaveContactFunc) { f.saveContact = fn }
 func (f *FSMController) InitialGreeting() StepResult {

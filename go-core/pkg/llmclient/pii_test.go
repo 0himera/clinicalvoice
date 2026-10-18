@@ -40,7 +40,7 @@ func TestMaskPII(t *testing.T) {
 		},
 		{
 			input:    "Иванов Иван Иванович 12.03.1985",
-			expected: "Иванов Иван Иванович [ДАТА]",
+			expected: "[ИМЯ] [ДАТА]",
 		},
 		{
 			input:    "Дата рождения 05/11/1990",
@@ -61,5 +61,27 @@ func TestMaskPII(t *testing.T) {
 		if strings.TrimSpace(actual) != strings.TrimSpace(tt.expected) {
 			t.Errorf("MaskPII(%q) = %q; want %q", tt.input, actual, tt.expected)
 		}
+	}
+}
+
+func TestRemoteSpeechRejectsPIIInEveryState(t *testing.T) {
+	for _, state := range []string{"STATE_INIT", "STATE_MAIN_MENU", "STATE_FINAL", "STATE_AWAIT_SPECIALTY"} {
+		for _, text := range []string{
+			"Иванов Иван Иванович, запишите к врачу", "иванов иван иванович",
+			"Оганесян Арам Ашотович", "Ли Вэй", "Jean-Luc Picard",
+			"Родился двенадцатого марта тысяча девятьсот восемьдесят пятого",
+			"Дата рождения 12.03.1985", "Паспорт 4510 123456", "на улице Ленина дом пять",
+			"8 999 123 45 67", "patient@example.com",
+		} {
+			if _, err := RemoteSpeech(text, state); err == nil {
+				t.Errorf("private speech accepted: state=%s, %q", state, text)
+			}
+		}
+	}
+	if text, err := RemoteSpeech("К кому вообще можно у вас обратиться?", "STATE_MAIN_MENU"); err != nil || text != "к кому вообще можно у вас обратиться" {
+		t.Fatalf("safe query rejected: %q %v", text, err)
+	}
+	if _, err := RemoteSpeech("Сориентируйте, к кому вообще можно обратиться?", "STATE_INIT"); err != nil {
+		t.Fatalf("catalogue query rejected: %v", err)
 	}
 }

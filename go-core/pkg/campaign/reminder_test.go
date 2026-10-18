@@ -109,3 +109,38 @@ func TestDelayedReminderNeverCallsAfterAppointment(t *testing.T) {
 		t.Fatalf("status=%s error=%v", status, err)
 	}
 }
+
+func TestExplicitDialDoesNotClaimQueuedForCompletedReminder(t *testing.T) {
+	s, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	mis := misclient.NewMockMISClient()
+	dialer := &fakeDialer{}
+	runner := New(s, mis, dialer, nil, true)
+	ctx := context.Background()
+	now := time.Now()
+	v, err := mis.CreateVisit(ctx, models.VisitCreate{ClientID: 1, DoctorID: 1, ScheduledAt: now.Add(48 * time.Hour).In(models.ClinicLocation).Format(models.DateTimeLayout)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveContact(ctx, storage.Contact{ClientID: 1, Endpoint: "PJSIP/200", ReminderConsent: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.Dial(ctx, v.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.Dial(ctx, v.ID, now); err == nil {
+		t.Fatal("active reminder falsely reported queued")
+	}
+	if err := runner.Outcome(ctx, v.ID, "CONFIRMED"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.Dial(ctx, v.ID, now.Add(3*time.Hour)); err == nil {
+		t.Fatal("confirmed reminder falsely reported queued")
+	}
+	if dialer.calls != 1 {
+		t.Fatalf("unexpected repeated dial: %d", dialer.calls)
+	}
+}

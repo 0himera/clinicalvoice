@@ -204,7 +204,7 @@ func ExtractSpecialty(text string) string {
 	}
 	for _, g := range groups {
 		for _, k := range g.keys {
-			if strings.Contains(s, k) {
+			if (len([]rune(k)) > 4 && strings.Contains(s, k)) || word(s, k) {
 				return g.spec
 			}
 		}
@@ -302,7 +302,13 @@ func SlotPreference(text string) slotmgr.Query {
 	if containsAny(s, "утро", "утром") {
 		q.MaxHour = 12
 	}
-	for day, name := range map[time.Weekday]string{time.Monday: "понедельник", time.Tuesday: "вторник", time.Wednesday: "сред", time.Thursday: "четверг", time.Friday: "пятниц", time.Saturday: "суббот"} {
+	for _, dayName := range []struct {
+		day  time.Weekday
+		name string
+	}{
+		{time.Monday, "понедельник"}, {time.Tuesday, "вторник"}, {time.Wednesday, "сред"}, {time.Thursday, "четверг"}, {time.Friday, "пятниц"}, {time.Saturday, "суббот"}, {time.Sunday, "воскресен"},
+	} {
+		day, name := dayName.day, dayName.name
 		if strings.Contains(s, name) {
 			d := day
 			if strings.Contains(s, "не в "+name) {

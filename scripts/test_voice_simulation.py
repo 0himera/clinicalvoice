@@ -10,6 +10,7 @@ def main():
     client = VoiceClient()
     try:
         client.wait_ready()
+        client.require_mock()
         result = client.start()
         assert client.speak(result["bot_speech"]).startswith(b"RIFF")
 

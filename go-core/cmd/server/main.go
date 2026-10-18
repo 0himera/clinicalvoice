@@ -165,6 +165,7 @@ func run() error {
 	defer cancel()
 	stopWorkers()
 	shutdownErr := server.Shutdown(shutdown)
+	shutdownErr = errors.Join(shutdownErr, api.WaitBackground(shutdown))
 	for i := 0; i < 3; i++ {
 		select {
 		case <-done:

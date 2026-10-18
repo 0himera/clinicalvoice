@@ -168,13 +168,13 @@ func (f *FSMController) reminder(ctx context.Context, s *models.CallSession, tex
 		return f.systemFailure(ctx, s)
 	}
 	return StepResult{
-		NextState:   StateDone,
-		BotSpeech:   "Спасибо, запись подтверждена. Возьмите паспорт и полис. Всего доброго!",
+		NextState:    StateDone,
+		BotSpeech:    "Спасибо, запись подтверждена. Возьмите паспорт и полис. Всего доброго!",
 		ShouldHangup: true,
-		Outcome:     "CONFIRMED",
-		Source:      "mis",
-		Confidence:  1.0,
-		Intent:      "CONFIRM_REMINDER",
-		Explanation: fmt.Sprintf("Запись #%d подтверждена пациентом и отмечена в МИС", v.ID),
+		Outcome:      "CONFIRMED",
+		Source:       "mis",
+		Confidence:   1.0,
+		Intent:       "CONFIRM_REMINDER",
+		Explanation:  fmt.Sprintf("Запись #%d подтверждена пациентом и отмечена в МИС", v.ID),
 	}
 }

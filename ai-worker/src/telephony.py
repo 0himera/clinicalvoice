@@ -8,22 +8,28 @@ import asyncio
 import concurrent.futures
 import contextlib
 import logging
-import math
+import re
 import struct
 import time
 import uuid
-from array import array
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 
-from src.audio import EndpointDetector, frame, pcm_to_wav, wav_to_pcm
+from src.audio import EndpointDetector, frame, pcm_metrics, pcm_to_wav, wav_to_pcm
 from src.diagnostics import CallDiagnostics
 from src.services import Services
 from src.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+
+def agi_variable(name: str, value: str) -> bytes:
+    if not re.fullmatch(r"[A-Z_][A-Z0-9_]{0,63}", name) or "\r" in value or "\n" in value:
+        raise ValueError("invalid AGI variable")
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'SET VARIABLE {name} "{escaped}"\n'.encode("ascii")
 
 
 @dataclass
@@ -136,11 +142,8 @@ class Bridge:
                         environment[key] = value.strip()
 
                 async def command(name: str, value: str):
-                    if "\r" in name or "\n" in name or "\r" in value or "\n" in value:
-                        raise ValueError("CRLF characters not permitted in AGI command")
-                    escaped_value = value.replace("\\", "\\\\").replace('"', '\\"')
-                    writer.write(f'SET VARIABLE {name} "{escaped_value}"\n'.encode("ascii"))
-                    await writer.drain()
+                    writer.write(agi_variable(name, value))
+                    await asyncio.wait_for(writer.drain(), 2)
                     answer = await reader.readline()
                     if not answer.startswith(b"200 result="):
                         raise ConnectionError("AGI command failed")
@@ -202,8 +205,8 @@ class Bridge:
             logger.warning("FastAGI failed (%s)", type(exc).__name__)
         finally:
             writer.close()
-            with contextlib.suppress(OSError):
-                await writer.wait_closed()
+            with contextlib.suppress(OSError, TimeoutError):
+                await asyncio.wait_for(writer.wait_closed(), 2)
             self.tasks.discard(task)
 
     async def audio(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -222,7 +225,7 @@ class Bridge:
                 kind, size = struct.unpack("!BH", await asyncio.wait_for(reader.readexactly(3), 5))
                 if kind != 1 or size != 16:
                     raise ValueError("AudioSocket UUID frame is required")
-                call_id = str(uuid.UUID(bytes=await reader.readexactly(16)))
+                call_id = str(uuid.UUID(bytes=await asyncio.wait_for(reader.readexactly(16), 5)))
                 call = self.calls.get(call_id)
                 if call is None or call.connected or call.finished:
                     raise ValueError("unknown or already connected call")
@@ -254,7 +257,7 @@ class Bridge:
                         for index in range(0, len(pcm), 320):
                             await asyncio.sleep(max(0, started + index / 16000 - time.monotonic()))
                             writer.write(frame(0x10, pcm[index : index + 320]))
-                            await writer.drain()
+                            await asyncio.wait_for(writer.drain(), 2)
                     except asyncio.CancelledError:
                         self.trace(
                             "playback_cancelled",
@@ -324,21 +327,7 @@ class Bridge:
                     text = await self.services.transcribe(pcm_to_wav(pcm))
                     audio_fields = {}
                     if self.settings.debug_dialogue or self.settings.technical_logs:
-                        samples = array("h", pcm)
-                        rms = math.sqrt(
-                            sum(value * value for value in samples) / max(1, len(samples))
-                        )
-                        audio_fields = {
-                            "rms_dbfs": round(20 * math.log10(max(1, rms) / 32768), 1),
-                            "peak_percent": round(
-                                max((abs(s) for s in samples), default=0) / 32768 * 100, 1
-                            ),
-                            # G.711 decoding saturates below PCM16 full scale.
-                            "clipped_percent": round(
-                                sum(abs(s) >= 31744 for s in samples) / max(1, len(samples)) * 100,
-                                2,
-                            ),
-                        }
+                        audio_fields = await asyncio.to_thread(pcm_metrics, pcm)
                     self.trace(
                         "asr_result",
                         call_id=call_id,
@@ -382,6 +371,9 @@ class Bridge:
                         if recognized_text is None or call.interrupted:
                             return
                         text, version = recognized_text
+                        if version != revision:
+                            busy = False
+                            continue
                         started_core = time.monotonic()
                         try:
                             result = await self.post(
@@ -393,7 +385,9 @@ class Bridge:
                                 },
                             )
                         except (httpx.HTTPError, TimeoutError, OSError) as exc:
-                            logger.error("Core dialogue turn failed for %s: %s", call_id, exc)
+                            logger.error(
+                                "Core dialogue turn failed for %s (%s)", call_id, type(exc).__name__
+                            )
                             call.result["transfer_target"] = "101"
                             await respond(
                                 {
@@ -501,7 +495,7 @@ class Bridge:
                     kind, size = struct.unpack("!BH", packet)
                     if size > 6400:
                         raise ValueError("AudioSocket frame exceeds 400 ms")
-                    data = await reader.readexactly(size)
+                    data = await asyncio.wait_for(reader.readexactly(size), 5)
                     if kind == 0:
                         break
                     if kind == 0xFF:
@@ -537,13 +531,16 @@ class Bridge:
                 return_exceptions=True,
             )
             writer.close()
-            with contextlib.suppress(OSError):
-                await writer.wait_closed()
-            if call:
-                self.trace("call_ended", call_id=call.call_id, reason=end_reason)
-                call.finished = True
-                call.created = time.monotonic()
-                with contextlib.suppress(httpx.HTTPError):
-                    await self.post(f"/api/dialogue/{call.call_id}/end")
-            if task:
+            with contextlib.suppress(OSError, TimeoutError):
+                await asyncio.wait_for(writer.wait_closed(), 2)
+            try:
+                if call:
+                    self.trace("call_ended", call_id=call.call_id, reason=end_reason)
+                    # Keep the handoff result until FastAGI finish consumes it.
+                    call.finished = True
+                    call.created = time.monotonic()
+                    with contextlib.suppress(httpx.HTTPError, TimeoutError):
+                        async with asyncio.timeout(3):
+                            await self.post(f"/api/dialogue/{call.call_id}/end")
+            finally:
                 self.tasks.discard(task)

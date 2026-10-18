@@ -122,13 +122,6 @@ func (r *Runner) Dial(ctx context.Context, id int, now time.Time) error {
 	if err != nil || !at.After(now) {
 		return errors.New("visit must be in the future")
 	}
-	var existingAttempts int
-	var existingStatus string
-	if err = r.store.ReadDB().QueryRowContext(ctx, "SELECT attempts, status FROM reminders WHERE visit_id=?", id).Scan(&existingAttempts, &existingStatus); err == nil {
-		if existingAttempts >= 2 || existingStatus == "NO_ANSWER" {
-			return errors.New("reminder attempts exhausted")
-		}
-	}
 	if _, err = r.store.DB.ExecContext(ctx, "INSERT OR IGNORE INTO reminders(visit_id,scheduled_at) VALUES(?,?)", v.ID, v.ScheduledAt); err != nil {
 		return err
 	}
@@ -152,6 +145,9 @@ func (r *Runner) dispatch(ctx context.Context, id int, now time.Time) error {
 		return err
 	}
 	if active >= r.maxConcurrent {
+		if id > 0 {
+			return errors.New("outbound capacity is busy")
+		}
 		return nil
 	}
 	var visitID int
@@ -165,10 +161,7 @@ func (r *Runner) dispatch(ctx context.Context, id int, now time.Time) error {
 	query += " ORDER BY scheduled_at,visit_id LIMIT 1"
 	if err = tx.QueryRowContext(ctx, query, args...).Scan(&visitID, &at); errors.Is(err, sql.ErrNoRows) {
 		if id > 0 {
-			var att int
-			if errCheck := tx.QueryRowContext(ctx, "SELECT attempts FROM reminders WHERE visit_id=?", id).Scan(&att); errCheck == nil && att >= 2 {
-				return errors.New("reminder attempts exhausted")
-			}
+			return errors.New("reminder is active, finished, delayed, or attempts exhausted")
 		}
 		return nil
 	} else if err != nil {
@@ -182,33 +175,36 @@ func (r *Runner) dispatch(ctx context.Context, id int, now time.Time) error {
 	}
 	v, err := r.mis.GetVisit(ctx, visitID)
 	if err != nil {
-		_, _ = r.store.DB.ExecContext(context.WithoutCancel(ctx), "UPDATE reminders SET status='PENDING', lease_until=0 WHERE visit_id=? AND scheduled_at=? AND status='DIALING'", visitID, at)
-		return err
+		return r.retryLater(ctx, visitID, at, err)
 	}
 	if v.Status != models.VisitPlanned || v.ScheduledAt != at {
 		return r.Outcome(ctx, visitID, "STALE")
 	}
 	visitTime, err := models.ParseDateTime(v.ScheduledAt)
 	if err != nil {
-		_, _ = r.store.DB.ExecContext(context.WithoutCancel(ctx), "UPDATE reminders SET status='PENDING', lease_until=0 WHERE visit_id=? AND scheduled_at=? AND status='DIALING'", visitID, at)
-		return err
+		return r.retryLater(ctx, visitID, at, err)
 	}
 	if !visitTime.After(now) {
 		return r.Outcome(ctx, visitID, "STALE")
 	}
 	contact, err := r.store.Contact(ctx, v.ClientID)
 	if err != nil {
-		_, _ = r.store.DB.ExecContext(context.WithoutCancel(ctx), "UPDATE reminders SET status='PENDING', lease_until=0 WHERE visit_id=? AND scheduled_at=? AND status='DIALING'", visitID, at)
-		return err
+		return r.retryLater(ctx, visitID, at, err)
 	}
 	if !contact.ReminderConsent {
 		return r.Outcome(ctx, visitID, "OPTED_OUT")
 	}
 	if err = r.dialer.Originate(ctx, contact.Endpoint, visitID); err != nil {
-		_, _ = r.store.DB.ExecContext(context.WithoutCancel(ctx), "UPDATE reminders SET status='PENDING', lease_until=0 WHERE visit_id=? AND scheduled_at=? AND status='DIALING'", visitID, at)
-		return fmt.Errorf("originate reminder: %w", err)
+		return r.retryLater(ctx, visitID, at, fmt.Errorf("originate reminder: %w", err))
 	}
 	return nil
+}
+
+func (r *Runner) retryLater(ctx context.Context, id int, at string, cause error) error {
+	settle, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	_, err := r.store.DB.ExecContext(settle, "UPDATE reminders SET status='PENDING', lease_until=0 WHERE visit_id=? AND scheduled_at=? AND status='DIALING'", id, at)
+	return errors.Join(cause, err)
 }
 
 func (r *Runner) Outcome(ctx context.Context, id int, status string) error {
@@ -236,14 +232,14 @@ func (r *Runner) Run(ctx context.Context) {
 				continue
 			}
 			if now.Sub(lastSync) >= 30*time.Minute {
-				if err := r.Schedule(ctx, now); err != nil {
+				if err := r.Schedule(misclient.Background(ctx), now); err != nil {
 					slog.Warn("schedule reminders", "error", err)
 				} else {
 					lastSync = now
 				}
 			}
 			for i := 0; i < r.maxConcurrent; i++ {
-				dispCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+				dispCtx, cancel := context.WithTimeout(misclient.Background(ctx), 20*time.Second)
 				err := r.dispatch(dispCtx, 0, now)
 				cancel()
 				if err != nil {

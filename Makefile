@@ -1,10 +1,22 @@
-.PHONY: help setup install build run-core run-ai docker-up docker-down test test-unit test-python lint check scenarios scenarios-voice sim sim-live voice smoke logs transcripts retention-timer clean
+.PHONY: help setup install build run-core run-ai docker-up docker-down health services-install gateway-install sip-check-vm test test-unit test-python lint check scenarios scenarios-voice sim sim-live sim-live-1h voice smoke logs transcripts retention-timer clean
 
 help:
-	@echo "setup install build docker-up run-core run-ai test lint check scenarios scenarios-voice sim sim-live voice smoke logs transcripts retention-timer"
+	@echo "setup install build docker-up run-core run-ai health services-install gateway-install sip-check-vm test lint check scenarios scenarios-voice sim sim-live voice smoke logs transcripts retention-timer"
 
 setup:
 	python3 scripts/setup.py
+
+health:
+	python3 scripts/check_health.py
+
+services-install:
+	sudo python3 scripts/install_services.py --user "$$(id -un)"
+
+gateway-install:
+	sudo python3 scripts/install_hackathon_asterisk.py
+
+sip-check-vm:
+	python3 scripts/check_vm_sip.py
 
 install:
 	cd ai-worker && uv sync --locked --extra models --group dev
@@ -44,6 +56,7 @@ test-python:
 	cd ai-worker && uv run --inexact --locked --group dev python -m pytest -q
 
 lint:
+	cd go-core && test -z "$$(gofmt -l cmd pkg)"
 	cd go-core && go vet ./...
 	cd ai-worker && uv run --inexact --locked --group dev ruff check src tests main.py ../scripts
 	cd ai-worker && uv run --inexact --locked --group dev ruff format --check src tests main.py ../scripts
@@ -56,19 +69,19 @@ voice:
 smoke:
 	cd ai-worker && uv run --inexact --locked --extra models python ../scripts/test_voice_simulation.py
 
-scenarios:
+scenarios: build
 	cd ai-worker && uv run --inexact --locked --group dev python ../scripts/run_scenarios.py
 
-scenarios-voice:
+scenarios-voice: build
 	cd ai-worker && uv run --inexact --locked --extra models python ../scripts/run_scenarios.py --voice
 
-sim:
+sim: build
 	cd ai-worker && uv run --inexact --locked --group dev python ../scripts/user_sim.py --backend ollama --no-voice
 
-sim-live:
+sim-live: build
 	cd ai-worker && uv run --inexact --locked --extra models python ../scripts/user_sim.py --backend gemini-live
 
-sim-live-1h:
+sim-live-1h: build
 	cd ai-worker && uv run --inexact --locked --extra models python ../scripts/user_sim.py --backend gemini-live --duration-min 60
 
 clean:

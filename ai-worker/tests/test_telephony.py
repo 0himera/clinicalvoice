@@ -156,3 +156,55 @@ async def test_emergency_speech_bypasses_blocked_dialogue_turn(services):
             writer.close()
             await writer.wait_closed()
         await bridge.close()
+
+
+async def test_short_vad_noise_does_not_silence_playback(services):
+    from conftest import wav_fixture
+
+    class LongTTS:
+        def synthesize(self, text, sample_rate, speaker=None):
+            return wav_fixture(pcm=b"\x01\x00" * 8000, rate=sample_rate)
+
+    turns = []
+
+    async def core(request):
+        if request.url.path.endswith("/turn"):
+            turns.append(request)
+        return httpx.Response(200, json={"status": "ok"})
+
+    services.tts = LongTTS()
+    bridge = Bridge(Settings(agi_port=0, audio_port=0), services)
+    await bridge.http.aclose()
+    bridge.http = httpx.AsyncClient(transport=httpx.MockTransport(core), base_url="http://core")
+    await bridge.start()
+    try:
+        call_id = str(uuid.uuid4())
+        bridge.calls[call_id] = Call(call_id, {"bot_speech": "Приветствие", "should_hangup": True})
+        reader, writer = await asyncio.open_connection(
+            "127.0.0.1", bridge.servers[1].sockets[0].getsockname()[1]
+        )
+        writer.write(frame(1, uuid.UUID(call_id).bytes))
+        await writer.drain()
+        kind, size = struct.unpack("!BH", await reader.readexactly(3))
+        assert kind == 0x10
+        pcm = bytearray(await reader.readexactly(size))
+        for _ in range(2):
+            writer.write(frame(0x10, b"\x01\x00" * 256))
+        for _ in range(20):
+            writer.write(frame(0x10, b"\x00" * 512))
+        await writer.drain()
+        async with asyncio.timeout(3):
+            while True:
+                header = await reader.read(3)
+                if not header:
+                    break
+                header += await reader.readexactly(3 - len(header))
+                kind, size = struct.unpack("!BH", header)
+                assert kind == 0x10
+                pcm.extend(await reader.readexactly(size))
+        assert len(pcm) == 16000
+        assert not turns
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        await bridge.close()

@@ -52,6 +52,8 @@ class Settings:
         )
         if settings.decision_device not in {"cpu", "cuda", "auto"}:
             raise ValueError("DECISION_DEVICE must be cpu, cuda or auto")
+        if settings.debug_dialogue and os.getenv("TRANSCRIPT_LOGGING", "false").lower() == "true":
+            raise ValueError("choose encrypted transcripts or plaintext mock debugging")
         if settings.debug_dialogue and os.getenv("MIS_API_TOKEN"):
             raise ValueError("dialogue transcript debugging is available only with the local mock")
         if settings.device not in {"auto", "cpu", "cuda"}:

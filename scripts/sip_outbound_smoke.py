@@ -13,20 +13,28 @@ from sip_smoke import Phone
 
 async def main():
     client = VoiceClient()
-    phone = Phone()
+    phone = None
     try:
         await asyncio.to_thread(client.wait_ready)
-        await phone.start()
+        await asyncio.to_thread(client.require_mock)
         cases = [
-            ("терапевту", ["Да", "Да, приду"], "Запланирована"),
+            ("терапевту", ["Да, это я", "Да, приду"], "Запланирована"),
             (
                 "офтальмологу",
-                ["Да", "Перенесите запись", "Первый вариант", "Да, подтверждаю", "Нет, спасибо"],
+                [
+                    "Да, это я",
+                    "Перенесите запись",
+                    "Первый вариант",
+                    "Да, подтверждаю",
+                    "Нет, спасибо",
+                ],
                 "Запланирована",
             ),
-            ("лору", ["Да", "Не смогу прийти", "Да, отменяйте", "Нет, спасибо"], "Отменена"),
+            ("лору", ["Да, это я", "Не смогу прийти", "Да, отменяйте", "Нет, спасибо"], "Отменена"),
         ]
         for specialty, phrases, status in cases:
+            phone = Phone()
+            await phone.start()
             before = {v["id"] for v in await asyncio.to_thread(client.visits)}
             await asyncio.to_thread(client.start)
             for text in [
@@ -65,7 +73,7 @@ async def main():
                 )
                 response.raise_for_status()
                 marker = f"Подтверждена запись #{visit['id']} {visit['scheduled_at']}"
-                assert marker in response.json()["comment"], (
+                assert marker in response.json().get("comment", ""), (
                     "voice confirmation was not saved in the MIS comment"
                 )
             if specialty == "офтальмологу":
@@ -74,6 +82,8 @@ async def main():
                     visit["doctor"]["id"],
                 )
             print(f"Outbound SIP outcome passed: {specialty}", flush=True)
+            await phone.close()
+            phone = None
             await asyncio.sleep(1)
             if status == "Запланирована":
                 # Clean up only the visit created by this case, through the public
@@ -89,7 +99,8 @@ async def main():
                 await asyncio.to_thread(client.core.post, f"/api/dialogue/{client.call_id}/end")
         print("All three live outbound SIP scenarios passed.", flush=True)
     finally:
-        await phone.close()
+        if phone is not None:
+            await phone.close()
         client.close()
 
 

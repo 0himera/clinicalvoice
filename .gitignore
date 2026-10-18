@@ -1,5 +1,6 @@
 # Binaries and build artifacts
 go-core/bin/
+/bin/
 *.exe
 *.dll
 *.so
@@ -44,5 +45,6 @@ var/
 *.db
 *.db-wal
 *.db-shm
+*.db.lock
 .ruff_cache/
 coverage.out

@@ -256,3 +256,38 @@ func TestLoadOllamaConfigAndResponseBudget(t *testing.T) {
 		})
 	}
 }
+
+type capturingRemoteTransport struct {
+	calls int
+	body  string
+}
+
+func (c *capturingRemoteTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.calls++
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil, err
+	}
+	c.body = string(body)
+	return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"{\"intent\":\"DIRECTORY_INFO\"}"},"finish_reason":"stop"}]}`))}, nil
+}
+
+func TestRemoteClientRejectsPrivateFirstUtteranceBeforeHTTP(t *testing.T) {
+	transport := &capturingRemoteTransport{}
+	client := NewUniversalLLMClient(Config{Provider: "gemini", BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai", APIKey: "fixture", Model: "fixture", AllowRemote: true})
+	client.httpClient.Transport = transport
+	for _, speech := range []string{"Запишите Иванова Ивана Ивановича", "иванов иван иванович двенадцатого марта", "Ли Вэй", "родился 12.03.1985"} {
+		if _, err := client.ExtractSlots(context.Background(), speech, "STATE_MAIN_MENU"); err == nil {
+			t.Fatalf("PII sent: %s", speech)
+		}
+	}
+	if transport.calls != 0 {
+		t.Fatal("private first utterance reached HTTP")
+	}
+	if _, err := client.ExtractSlots(context.Background(), "К кому вообще можно у вас обратиться?", "STATE_MAIN_MENU"); err != nil {
+		t.Fatal(err)
+	}
+	if transport.calls != 1 || strings.Contains(transport.body, "Иванов") {
+		t.Fatal("invalid remote payload")
+	}
+}

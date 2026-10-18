@@ -95,7 +95,9 @@ func testAPI(t *testing.T, token string) (*Server, *misclient.MockMISClient) {
 	slots := slotmgr.New(store, schedule.Snapshot{Doctors: []models.Doctor{doc}, Entries: []schedule.Entry{{Free: true, Slot: models.Slot{DoctorID: doc.ID, Doctor: doc.FullName, Specialty: doc.Specialty, StartTime: at, Duration: 20}}}})
 	m := misclient.NewMockMISClient()
 	f := dialogue.NewFSMController(slots, m)
-	return New(Config{FSM: f, MIS: m, Slots: slots, Store: store, Token: token, Mode: "mock"}), m
+	api := New(Config{FSM: f, MIS: m, Slots: slots, Store: store, Token: token, Mode: "mock"})
+	t.Cleanup(func() { _ = api.WaitBackground(context.Background()) })
+	return api, m
 }
 
 type blockedMIS struct {
@@ -158,9 +160,12 @@ func TestUrgentInterruptDoesNotWaitForMISMutation(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &warning); err != nil {
 		t.Fatal(err)
 	}
-	if warning.TransferTarget != "104" || !warning.EscalationQueued {
+	if warning.TransferTarget != "104" {
 		close(blocked.release)
 		t.Fatalf("urgent result missing: %+v", warning)
+	}
+	if err := api.WaitBackground(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	var clientID int
 	if err := api.cfg.Store.DB.QueryRow("SELECT client_id FROM escalations").Scan(&clientID); err != nil || clientID != 1 {
@@ -324,5 +329,125 @@ func TestAuthenticationRequiredAndHealthEndpointsExempt(t *testing.T) {
 	w = request(t, api, "POST", "/api/dialogue/start", map[string]any{}, "valid-token")
 	if w.Code != 201 {
 		t.Fatalf("non-health endpoint with valid token must succeed: got %d", w.Code)
+	}
+}
+
+func TestClosedCallDoesNotRunFSMAndOldTurnsRemainIdempotent(t *testing.T) {
+	api, mis := testAPI(t, "")
+	w := request(t, api, "POST", "/api/dialogue/start", map[string]string{}, "")
+	var call Response
+	if err := json.Unmarshal(w.Body.Bytes(), &call); err != nil {
+		t.Fatal(err)
+	}
+	payload := map[string]string{"call_id": call.CallID, "turn_id": "first", "text": "повторите"}
+	first := request(t, api, "POST", "/api/dialogue/turn", payload, "")
+	for i := 0; i < 20; i++ {
+		next := map[string]string{"call_id": call.CallID, "turn_id": time.Now().Format(time.RFC3339Nano), "text": "повторите"}
+		if w := request(t, api, "POST", "/api/dialogue/turn", next, ""); w.Code != 200 {
+			t.Fatal(w.Body)
+		}
+	}
+	if replay := request(t, api, "POST", "/api/dialogue/turn", payload, ""); replay.Body.String() != first.Body.String() {
+		t.Fatalf("old turn replayed through FSM: %s", replay.Body)
+	}
+	if w := request(t, api, "POST", "/api/dialogue/"+call.CallID+"/end", nil, ""); w.Code != 200 {
+		t.Fatal(w.Body)
+	}
+	if w := request(t, api, "POST", "/api/dialogue/turn", map[string]string{"call_id": call.CallID, "text": "Запишите к врачу"}, ""); w.Code != 410 {
+		t.Fatalf("closed call accepted turn: %d", w.Code)
+	}
+	visits, err := mis.ListVisits(context.Background(), 0, "")
+	if err != nil || len(visits) != 0 {
+		t.Fatalf("closed/replayed call changed MIS: %+v %v", visits, err)
+	}
+}
+
+func TestReadinessChecksWriterWithoutBreakingLiveness(t *testing.T) {
+	api, _ := testAPI(t, "")
+	tx, err := api.cfg.Store.DB.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if w := request(t, api, "GET", "/healthz", nil, ""); w.Code != 200 {
+		t.Fatalf("liveness blocked by writer: %d", w.Code)
+	}
+	if w := request(t, api, "GET", "/readyz", nil, ""); w.Code != 503 {
+		t.Fatalf("busy writer reported ready: %d", w.Code)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if w := request(t, api, "GET", "/readyz", nil, ""); w.Code != 200 {
+		t.Fatalf("writer did not recover: %d", w.Code)
+	}
+}
+
+func TestEmergencyResponseDoesNotWaitForLocalWriter(t *testing.T) {
+	api, mis := testAPI(t, "")
+	api.cfg.Escalate = escalation.New(api.cfg.Store, mis).Enqueue
+	w := request(t, api, "POST", "/api/dialogue/start", map[string]string{}, "")
+	var call Response
+	if err := json.Unmarshal(w.Body.Bytes(), &call); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := api.cfg.Store.DB.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- request(t, api, "POST", "/api/dialogue/"+call.CallID+"/interrupt", map[string]string{"text": "нет, не могу дышать"}, "")
+	}()
+	select {
+	case w = <-done:
+		var result Response
+		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || result.TransferTarget != "104" {
+			t.Fatalf("emergency lost: %s %v", w.Body, err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("emergency response waited for SQLite")
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.WaitBackground(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := api.cfg.Store.ReadDB().QueryRow("SELECT COUNT(*) FROM escalations WHERE status='PENDING'").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("outbox lost: %d %v", count, err)
+	}
+}
+
+func TestLateOperatorPersistenceCannotOverwriteEmergency(t *testing.T) {
+	api, _ := testAPI(t, "")
+	entered, release := make(chan struct{}), make(chan struct{})
+	api.cfg.Escalate = func(ctx context.Context, id int, description string) error {
+		if strings.HasPrefix(description, "R-02") {
+			close(entered)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	}
+	w := request(t, api, "POST", "/api/dialogue/start", map[string]string{}, "")
+	var call Response
+	if err := json.Unmarshal(w.Body.Bytes(), &call); err != nil {
+		t.Fatal(err)
+	}
+	request(t, api, "POST", "/api/dialogue/"+call.CallID+"/interrupt", map[string]string{"text": "оператор"}, "")
+	<-entered
+	request(t, api, "POST", "/api/dialogue/"+call.CallID+"/interrupt", map[string]string{"text": "не могу дышать"}, "")
+	close(release)
+	if err := api.WaitBackground(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := api.find(call.CallID).interrupted.Load(); got.result.TransferTarget != "104" || got.priority != 4 {
+		t.Fatalf("late result downgraded emergency: %+v", got)
 	}
 }

@@ -21,6 +21,7 @@ import io
 import json
 import os
 import re
+import secrets
 import sqlite3
 import subprocess
 import sys
@@ -946,10 +947,12 @@ def start_isolated_server(
     MISFixtureSeeder.preseed_database(db_path, fixture or {}, persona or {})
 
     env = os.environ.copy()
+    core_token = os.getenv("CORE_API_TOKEN") or secrets.token_hex(24)
     env.update(
         {
             "PORT": str(port),
             "CORE_HOST": "127.0.0.1",
+            "CORE_API_TOKEN": core_token,
             "CORE_URL": f"http://127.0.0.1:{port}",
             "MIS_API_TOKEN": "",
             "DATABASE_PATH": str(db_path),
@@ -1002,8 +1005,17 @@ def start_isolated_server(
                                 f"Isolated server on port {port} failed to start. See {log_path}"
                             ) from None
                         time.sleep(0.2)
-            os.environ["CORE_URL"] = f"http://127.0.0.1:{port}"
-            yield db_path
+            previous = {key: os.environ.get(key) for key in ("CORE_URL", "CORE_API_TOKEN")}
+            try:
+                os.environ["CORE_URL"] = f"http://127.0.0.1:{port}"
+                os.environ["CORE_API_TOKEN"] = core_token
+                yield db_path
+            finally:
+                for key, value in previous.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
         finally:
             if proc.poll() is None:
                 try:

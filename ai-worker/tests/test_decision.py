@@ -97,12 +97,18 @@ async def test_decision_http_endpoint():
         decision=FakeDecisionEngine(device="cpu"),
         device="cpu",
     )
-    settings = Settings(telephony=False, decision_mock=True, decision_device="cpu")
+    settings = Settings(
+        telephony=False, decision_mock=True, decision_device="cpu", api_token="test-token"
+    )
     app = create_app(settings=settings, services=services)
 
     async with (
         app.router.lifespan_context(app),
-        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+        AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            headers={"Authorization": "Bearer test-token"},
+        ) as client,
     ):
         health_resp = await client.get("/health")
         assert health_resp.status_code == 200
@@ -121,7 +127,7 @@ async def test_decision_http_endpoint():
         decide_resp = await client.post("/v1/decide", json=payload)
         assert decide_resp.status_code == 200
         data = decide_resp.json()
-        assert data["model"] == "THX-01"
+        assert data["model"] == "mock"
         assert "answers" in data
         assert data["answers"]["confirm"]["choice"] == "AFFIRM"
         assert "latency_ms" in data
@@ -289,3 +295,77 @@ def test_create_decision_engine_factory():
     disabled_settings = Settings(decision_mock=False, decision_enabled=False)
     engine_disabled = create_decision_engine(disabled_settings)
     assert isinstance(engine_disabled, DisabledDecisionEngine)
+
+
+def test_real_engine_always_uses_model_for_non_slavic_names(monkeypatch):
+    import contextlib
+    import sys
+    import types
+
+    from src.decision import THX01Engine
+
+    calls = []
+
+    def backend(agent, state, questions):
+        calls.append((state, questions))
+        return {
+            "answers": {
+                "doctor": {
+                    "type": "excerpt",
+                    "text": "Ли",
+                    "start": 2,
+                    "end": 4,
+                    "probability": 0.73,
+                }
+            }
+        }
+
+    monkeypatch.setitem(
+        sys.modules, "torch", types.SimpleNamespace(inference_mode=contextlib.nullcontext)
+    )
+    monkeypatch.setitem(sys.modules, "thx01.decide", types.SimpleNamespace(decide=backend))
+    engine = THX01Engine.__new__(THX01Engine)
+    engine.agent = object()
+    questions = {"doctor": {"type": "excerpt", "question": "Surname of doctor"}}
+    for text in ("к Ли", "к Оганесян", "к Богдановой", "к хирургу"):
+        result = engine.decide(text, questions)
+        assert result["doctor"]["probability"] == 0.73
+        assert calls[-1] == (text, questions)
+    assert len(calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_cancelled_decision_keeps_native_capacity():
+    import asyncio
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from src.decision import THX01Engine
+
+    started, finish = threading.Event(), threading.Event()
+    calls = []
+
+    def inference(state, questions):
+        calls.append(state)
+        started.set()
+        assert finish.wait(2)
+        return {}
+
+    engine = THX01Engine.__new__(THX01Engine)
+    engine.decide = inference
+    engine._capacity = asyncio.Semaphore(1)
+    engine._executor = ThreadPoolExecutor(max_workers=1)
+    first = asyncio.create_task(engine.decide_async("first", {}))
+    assert await asyncio.to_thread(started.wait, 1)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(engine.decide_async("cancelled-in-queue", {}), 0.02)
+        assert calls == ["first"]
+    finally:
+        finish.set()
+    assert await engine.decide_async("next", {}) == {}
+    assert calls == ["first", "next"]
+    engine.close()

@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/himera/tochka-voice/go-core/pkg/config"
 	"github.com/himera/tochka-voice/go-core/pkg/diagnostics"
 )
@@ -33,6 +35,7 @@ func run() error {
 	key := flag.String("key", keyDefault, "path to local 32-byte key")
 	dir := flag.String("dir", dirDefault, "encrypted transcript directory")
 	initKey := flag.Bool("init-key", false, "create a new key; refuses to overwrite")
+	allowStdout := flag.Bool("allow-stdout", false, "explicitly allow plaintext output to a pipe or file")
 	prune := flag.Bool("prune", false, "delete expired transcript files without printing plaintext")
 	call := flag.String("call", "", "filter by call UUID")
 	last := flag.Int("last", 50, "maximum number of decrypted events to print")
@@ -61,6 +64,9 @@ func run() error {
 	}
 	if *last < 1 || *last > 10000 {
 		return errors.New("last must be between 1 and 10000")
+	}
+	if _, err := unix.IoctlGetTermios(int(os.Stdout.Fd()), unix.TCGETS); err != nil && !*allowStdout {
+		return errors.New("plaintext output requires a terminal; use -allow-stdout for an intentional export")
 	}
 	aead, err := diagnostics.LoadCipher(*key)
 	if err != nil {

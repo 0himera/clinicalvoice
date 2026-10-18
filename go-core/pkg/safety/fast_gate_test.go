@@ -1,7 +1,6 @@
 package safety
 
 import (
-	"context"
 	"testing"
 
 	"github.com/himera/tochka-voice/go-core/pkg/models"
@@ -89,61 +88,6 @@ func TestFastGateNormalSpeech(t *testing.T) {
 		res := gate.Check(p)
 		if res.Level != models.FlagNone {
 			t.Errorf("Expected None for '%s', got %v", p, res.Level)
-		}
-	}
-}
-
-type mockThreatDecider struct {
-	isThreat bool
-	pTrue    float64
-	err      error
-}
-
-func (m *mockThreatDecider) DecideVitalThreat(ctx context.Context, utterance string) (bool, float64, error) {
-	return m.isThreat, m.pTrue, m.err
-}
-
-func TestFastGateWithThreatDecider(t *testing.T) {
-	gate := NewFastGate()
-
-	// 1. Metaphor filtered out (P < 0.15, isThreat = false)
-	gate.SetThreatDecider(&mockThreatDecider{isThreat: false, pTrue: 0.02})
-	res := gate.Check("У меня сердце кровью обливается, что не могу записаться к Богдановой")
-	if res.Level != models.FlagNone {
-		t.Fatalf("expected metaphor to be filtered, got level %v", res.Level)
-	}
-
-	// 2. Real emergency (isThreat = true)
-	gate.SetThreatDecider(&mockThreatDecider{isThreat: true, pTrue: 0.98})
-	res = gate.Check("У меня болит в груди и трудно дышать")
-	if res.Level != models.FlagCategoryA {
-		t.Fatalf("expected Category A for real threat, got level %v", res.Level)
-	}
-
-	// 3. Fail-closed on error (err != nil -> treated as emergency)
-	gate.SetThreatDecider(&mockThreatDecider{isThreat: true, pTrue: 1.0, err: context.DeadlineExceeded})
-	res = gate.Check("Кажется, инфаркт")
-	if res.Level != models.FlagCategoryA {
-		t.Fatalf("expected fail-closed Category A on error, got level %v", res.Level)
-	}
-}
-
-func TestFastGateNegatedOperatorAndComplaint(t *testing.T) {
-	gate := NewFastGate()
-
-	negatedPhrases := []string{
-		"Мне не нужен оператор, я сам разберусь",
-		"Не переводите на человека",
-		"Я без оператора запишусь",
-		"Не надо оператора",
-		"Я не буду жаловаться",
-		"Это не жалоба, просто уточняю",
-	}
-
-	for _, p := range negatedPhrases {
-		res := gate.Check(p)
-		if res.Level == models.FlagOperatorReq || res.Level == models.FlagComplaint {
-			t.Errorf("Expected phrase %q not to trigger operator or complaint, got level %v", p, res.Level)
 		}
 	}
 }
@@ -241,3 +185,42 @@ func TestFastGateOperatorFalsePositivesAndComplaintNegations(t *testing.T) {
 	}
 }
 
+func TestNegationsCannotHideIndependentEmergencies(t *testing.T) {
+	gate := NewFastGate()
+	for _, phrase := range []string{
+		"не знаю, инфаркт ли это", "не болит живот не могу дышать", "нет боли в груди не могу дышать", "не уверен что это инфаркт",
+		"не могу терпеть боль в груди", "нет сил, задыхаюсь",
+		"не хочу оператора, я не могу дышать", "нет, не могу дышать",
+		"не болит живот и болит в груди", "инфаркта нет, но задыхаюсь",
+		"не жалуюсь, в груди сильная боль", "У меня болит грудь",
+	} {
+		if got := gate.Check(phrase); got.Level != models.FlagCategoryA {
+			t.Errorf("%q: %s", phrase, got.Level)
+		}
+	}
+	for _, phrase := range []string{
+		"инфаркта нет", "инсульта нет", "судорог нет", "не задыхаюсь",
+		"не острая боль", "нет невыносимой боли", "нет сильной боли в груди",
+		"сердце болит за команду", "сердце кровью обливается",
+	} {
+		if got := gate.Check(phrase); got.Level == models.FlagCategoryA || got.Level == models.FlagCategoryB {
+			t.Errorf("%q: %s", phrase, got.Level)
+		}
+	}
+}
+
+func BenchmarkFastGate(b *testing.B) {
+	gate := NewFastGate()
+	for i := 0; i < b.N; i++ {
+		gate.Check("Не болит живот, но в груди сильная боль и не хватает воздуха")
+	}
+}
+
+func TestIndependentHumanRequestSurvivesNegatedClause(t *testing.T) {
+	gate := NewFastGate()
+	for _, phrase := range []string{"оператор не нужен, позовите человека", "не переводите на оператора, а соедините с регистратором", "человек пожалуйста"} {
+		if got := gate.Check(phrase); got.Level != models.FlagOperatorReq {
+			t.Errorf("human request lost: %q %+v", phrase, got)
+		}
+	}
+}

@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1140" viewBox="0 0 1200 1140" role="img" aria-labelledby="title description">
+  <title id="title">Tochka Voice — архитектура развёртывания на ВМ команды 078</title>
+  <desc id="description">Пациент звонит через SIP-шлюз в Asterisk. FastAGI передаёт метаданные в Python, AudioSocket передаёт PCM-аудио. В Python работают VAD, ASR, TTS и THX-01. Речевой мост обращается к Go по HTTP; Go управляет безопасностью, диалогом, МИС, SQLite и звонками через AMI. Перед обращением к NLU-шлюзу текущая реплика проходит закрытый словарь. Оператор доступен после отдельной регистрации.</desc>
+  <defs>
+    <style>
+      text { font-family: "DejaVu Sans", Arial, sans-serif; fill: #172b43; }
+      .heading { font-size: 25px; font-weight: 700; }
+      .name { font-size: 20px; font-weight: 700; }
+      .body { font-size: 16px; }
+      .small { font-size: 14px; }
+      .muted { fill: #52657d; }
+      .wire { fill: none; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+      .audio { stroke: #0891b2; }
+      .http { stroke: #7252bf; }
+      .control { stroke: #52657d; }
+      .ami { stroke: #b45309; }
+      .data { stroke: #28796f; }
+      .remote { stroke: #a95b20; }
+    </style>
+    <marker id="audio" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#0891b2"/></marker>
+    <marker id="http" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#7252bf"/></marker>
+    <marker id="control" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#52657d"/></marker>
+    <marker id="ami" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#b45309"/></marker>
+    <marker id="data" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#28796f"/></marker>
+    <marker id="remote" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#a95b20"/></marker>
+  </defs>
+  <rect width="1200" height="1140" rx="18" fill="#ffffff"/>
+  <text x="40" y="35" class="heading">Tochka Voice · как проходит звонок</text>
+  <text x="40" y="60" class="body muted">Настроенный маршрут на ВМ команды 078. Локальные модели и отдельный контроллер операций.</text>
+
+  <rect x="30" y="215" width="1140" height="680" rx="20" fill="#f7f9fc" stroke="#ced8e5" stroke-width="1.5"/>
+  <text x="55" y="247" class="name">ВМ команды</text>
+  <text x="55" y="272" class="small muted">HTTP, AMI, FastAGI и AudioSocket — loopback</text>
+  <rect x="50" y="455" width="420" height="285" rx="15" fill="#edf6f9" stroke="#b8d5df" stroke-width="1.5"/>
+
+  <!-- Audio, control and model requests have independent paths. -->
+  <path d="M290 127H475" class="wire audio" marker-start="url(#audio)" marker-end="url(#audio)"/>
+  <path d="M600 175V280" class="wire audio" marker-start="url(#audio)" marker-end="url(#audio)"/>
+  <path d="M750 305H1120V175" class="wire control" stroke-dasharray="7 6" marker-end="url(#control)"/>
+  <path d="M450 315H220V455" class="wire audio" marker-start="url(#audio)" marker-end="url(#audio)"/>
+  <path d="M450 345H300V455" class="wire control" marker-start="url(#control)" marker-end="url(#control)"/>
+  <path d="M900 455V350H750" class="wire ami" marker-end="url(#ami)"/>
+  <path d="M450 554H750" class="wire http" marker-start="url(#http)" marker-end="url(#http)"/>
+  <path d="M450 680H750" class="wire http" marker-start="url(#http)" marker-end="url(#http)"/>
+  <path d="M750 718H715V765H520V790" class="wire data" marker-start="url(#data)" marker-end="url(#data)"/>
+  <path d="M980 790V740" class="wire data" marker-end="url(#data)"/>
+  <path d="M770 740V920H315V995" class="wire control" marker-start="url(#control)" marker-end="url(#control)"/>
+  <path d="M1130 700H1150V960H1030V995" class="wire remote" marker-start="url(#remote)" marker-end="url(#remote)"/>
+
+  <g text-anchor="middle">
+    <rect x="40" y="80" width="250" height="95" rx="13" fill="#eff8fc" stroke="#0891b2" stroke-width="1.5"/>
+    <text x="165" y="112" class="name">Пациент · Linphone</text>
+    <text x="165" y="139" class="body">Аккаунт phone-078</text>
+    <text x="165" y="161" class="small muted">Звонок на 078</text>
+    <rect x="475" y="80" width="250" height="95" rx="13" fill="#eff8fc" stroke="#0891b2" stroke-width="1.5"/>
+    <text x="600" y="112" class="name">SIP-шлюз</text>
+    <text x="600" y="139" class="body">Организаторы хакатона</text>
+    <text x="600" y="161" class="small muted">Маршрут команды 078</text>
+    <rect x="910" y="80" width="250" height="95" rx="13" fill="#f8fafc" stroke="#8493a7" stroke-width="1.5" stroke-dasharray="7 6"/>
+    <text x="1035" y="112" class="name">Сотрудник / пост</text>
+    <text x="1035" y="139" class="body">101 / 104 / 105</text>
+    <text x="1035" y="161" class="small muted">После регистрации SIP</text>
+    <rect x="450" y="280" width="300" height="85" rx="13" fill="#fff6e9" stroke="#ca852b" stroke-width="1.5"/>
+    <text x="600" y="315" class="name">Asterisk · SIP / RTP</text>
+    <text x="600" y="343" class="body">Диалплан звонков</text>
+  </g>
+
+  <text x="70" y="479" class="body" font-weight="700">ai-worker · Python · API :8000</text>
+  <g text-anchor="middle">
+    <rect x="70" y="495" width="380" height="120" rx="11" fill="#ffffff" stroke="#84b5c5"/>
+    <text x="260" y="524" class="name">Речевой мост</text>
+    <text x="260" y="551" class="body">Silero VAD → Faster-Whisper ASR</text>
+    <text x="260" y="576" class="body">Silero TTS v5_ru → AudioSocket</text>
+    <text x="260" y="601" class="small muted">Barge-in при перебивании</text>
+    <rect x="70" y="640" width="380" height="80" rx="11" fill="#f5f1fd" stroke="#a08acb"/>
+    <text x="260" y="671" class="name">THX-01 · локальный NLU</text>
+    <text x="260" y="699" class="body">Разбор намерений и сущностей</text>
+  </g>
+
+  <rect x="750" y="455" width="380" height="285" rx="15" fill="#edf2ff" stroke="#9aafd8" stroke-width="1.5"/>
+  <g text-anchor="middle">
+    <text x="940" y="489" class="name">go-core · Go · HTTP :8080</text>
+    <text x="940" y="517" class="body">Контроллер диалога и операций</text>
+    <rect x="775" y="535" width="330" height="42" rx="8" fill="#ffffff" stroke="#cfb6bf"/>
+    <text x="940" y="562" class="body" font-weight="700">Локальный safety gate → FSM</text>
+    <text x="940" y="607" class="body">Явное подтверждение изменений</text>
+    <text x="940" y="636" class="body">Слоты · outbox · напоминания</text>
+    <text x="940" y="665" class="body">Проверка JSON от моделей</text>
+    <text x="940" y="694" class="body">Фильтр перед удалённым NLU</text>
+    <text x="940" y="721" class="small muted">Модели не выполняют операции в МИС</text>
+  </g>
+
+  <g text-anchor="middle">
+    <rect x="360" y="790" width="320" height="80" rx="12" fill="#eaf7f3" stroke="#7bb5a8"/>
+    <text x="520" y="817" class="name">SQLite · WAL</text>
+    <text x="520" y="840" class="small">Контакты · согласия · слоты</text>
+    <text x="520" y="860" class="small">Outbox · итоги напоминаний</text>
+    <rect x="825" y="790" width="305" height="80" rx="12" fill="#ffffff" stroke="#b5c3d4"/>
+    <text x="977" y="820" class="name">Исходные данные</text>
+    <text x="977" y="845" class="body">Excel и регламент</text>
+    <text x="977" y="864" class="small muted">Расписание · справки · праздники</text>
+    <rect x="70" y="995" width="485" height="95" rx="13" fill="#f0f5fb" stroke="#8ba4bf" stroke-width="1.5"/>
+    <text x="312" y="1028" class="name">МИС стенда</text>
+    <text x="312" y="1057" class="body">Клиенты · визиты · заявки сотрудникам</text>
+    <text x="312" y="1079" class="small muted">Результат операции подтверждает МИС</text>
+    <rect x="675" y="995" width="455" height="95" rx="13" fill="#fff6ec" stroke="#c78e5d" stroke-width="1.5"/>
+    <text x="902" y="1028" class="name">Дополнительный NLU · hub</text>
+    <text x="902" y="1057" class="body">openai/gpt-oss-120b</text>
+    <text x="902" y="1079" class="small muted">Разбор реплики; ответ в JSON</text>
+  </g>
+
+  <!-- Edge captions stay outside the component cards. -->
+  <g text-anchor="middle">
+    <text x="382" y="110" class="body" fill="#07748e">SIP / RTP</text>
+    <text x="382" y="155" class="small muted">G.711 · 8 кГц</text>
+    <text x="669" y="227" class="body">SIP / RTP</text>
+    <rect x="920" y="274" width="150" height="25" fill="#f7f9fc"/>
+    <text x="995" y="292" class="small muted">SIP-перевод</text>
+    <text x="133" y="389" class="body">AudioSocket</text>
+    <text x="133" y="413" class="body">:9092 · PCM16</text>
+    <text x="133" y="435" class="small muted">Аудио · 8 кГц</text>
+    <text x="379" y="389" class="body">FastAGI :4573</text>
+    <text x="379" y="413" class="small muted">UUID и канал</text>
+    <text x="1012" y="392" class="body" fill="#9a4807">AMI :5038</text>
+    <text x="1012" y="418" class="body">Originate / Redirect</text>
+    <text x="600" y="500" class="body">HTTP :8080</text>
+    <text x="600" y="524" class="body">Диалог · прерывания</text>
+    <text x="600" y="581" class="small muted">Текст реплики ⇄ bot_speech</text>
+    <text x="600" y="634" class="body">HTTP :8000</text>
+    <text x="600" y="658" class="body">/v1/decide</text>
+    <text x="600" y="707" class="small muted">Типизированные вопросы ⇄ JSON</text>
+    <rect x="430" y="748" width="200" height="27" fill="#f7f9fc"/>
+    <text x="530" y="768" class="small muted">Локальные данные</text>
+    <text x="1036" y="773" class="small muted">Загрузка</text>
+    <rect x="80" y="941" width="470" height="35" rx="6" fill="#ffffff"/>
+    <text x="315" y="964" class="body">REST · GMT+4 · 10 запросов / мин</text>
+    <rect x="795" y="923" width="330" height="50" rx="6" fill="#ffffff"/>
+    <text x="960" y="944" class="body">Текущая реплика + состояние</text>
+    <text x="960" y="966" class="small muted">Только после закрытого словаря</text>
+  </g>
+  <text x="70" y="794" class="small muted">Речевые модели</text>
+  <text x="70" y="817" class="body" font-weight="700">работают на ВМ.</text>
+  <text x="70" y="846" class="small muted">Аудиозапись выключена.</text>
+  <text x="70" y="1122" class="small muted">В удалённый NLU не отправляются аудио, карточки МИС и история диалога. Пунктир — сотрудник после регистрации.</text>
+</svg>

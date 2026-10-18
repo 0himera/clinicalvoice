@@ -2,8 +2,10 @@ package schedule
 
 import (
 	"archive/zip"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/himera/tochka-voice/go-core/pkg/models"
@@ -220,5 +222,73 @@ func TestExcelMinutesFormats(t *testing.T) {
 		if got != tc.want {
 			t.Fatalf("excelMinutes(%q) = %d, want %d", tc.input, got, tc.want)
 		}
+	}
+}
+
+func rewriteFixture(t *testing.T, source string, transform func(string, string) string) string {
+	t.Helper()
+	input, err := zip.OpenReader(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	target := filepath.Join(t.TempDir(), "changed.xlsx")
+	file, err := os.Create(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := zip.NewWriter(file)
+	for _, entry := range input.File {
+		reader, err := entry.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(reader)
+		reader.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		writer, err := output.Create(entry.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = writer.Write([]byte(transform(entry.Name, string(data)))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := output.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return target
+}
+
+func TestMovedWorkbookColumnsKeepTheirMeaning(t *testing.T) {
+	source := createSyntheticXLSX(t)
+	moved := rewriteFixture(t, source, func(name, text string) string {
+		if name == "xl/worksheets/sheet1.xml" {
+			text = strings.ReplaceAll(text, `r="E`, `r="ZZ`)
+			text = strings.ReplaceAll(text, `r="F`, `r="E`)
+			text = strings.ReplaceAll(text, `r="ZZ`, `r="F`)
+		}
+		return text
+	})
+	schedule, err := LoadXLSX(moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if schedule.Doctors[0].Audience != "взрослые" || schedule.Doctors[0].Room != "101" {
+		t.Fatalf("moved columns corrupted doctor: %+v", schedule.Doctors[0])
+	}
+	bad := rewriteFixture(t, source, func(name, text string) string {
+		if name == "xl/worksheets/sheet1.xml" {
+			return strings.ReplaceAll(text, "Специальность", "Неизвестная колонка")
+		}
+		return text
+	})
+	if _, err := LoadXLSX(bad); err == nil {
+		t.Fatal("unknown schema silently accepted")
 	}
 }

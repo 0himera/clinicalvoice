@@ -64,10 +64,8 @@ type session struct {
 	mu          sync.Mutex
 	call        *models.CallSession
 	cache       map[string]cached
-	order       []string
 	id          string
 	channel     string
-	caller      string
 	control     sync.Mutex
 	turnCancel  context.CancelFunc
 	interrupted atomic.Pointer[interruptResult]
@@ -80,11 +78,12 @@ type interruptResult struct {
 	priority int
 }
 type Server struct {
-	cfg      Config
-	mu       sync.Mutex
-	sessions map[string]*session
-	handler  http.Handler
-	gate     *safety.FastGate
+	cfg        Config
+	mu         sync.Mutex
+	sessions   map[string]*session
+	handler    http.Handler
+	background sync.WaitGroup
+	gate       *safety.FastGate
 }
 
 func New(cfg Config) *Server {
@@ -118,6 +117,9 @@ func New(cfg Config) *Server {
 	mux.HandleFunc("PUT /api/contacts/{id}", s.contact)
 	mux.HandleFunc("POST /api/reminders/dial", s.dial)
 	mux.HandleFunc("GET /api/escalations", s.escalations)
+	mux.HandleFunc("GET /api/escalations/review", s.reviewEscalations)
+	mux.HandleFunc("GET /api/slot-claims", s.slotClaims)
+	mux.HandleFunc("POST /api/slot-claims/reconcile", s.reconcileClaims)
 	s.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Cache-Control", "no-store")
@@ -183,6 +185,12 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		problem(w, 503, "storage unavailable")
 		return
 	}
+	if strings.TrimSuffix(r.URL.Path, "/") == "/readyz" {
+		if err := s.cfg.Store.WriteDB().PingContext(c); err != nil {
+			problem(w, 503, "storage writer unavailable")
+			return
+		}
+	}
 	write(w, 200, map[string]any{"status": "ok", "mode": s.cfg.Mode, "doctors": len(s.cfg.Slots.ListDoctors())})
 }
 func (s *Server) start(w http.ResponseWriter, r *http.Request) {
@@ -206,7 +214,7 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	call := &models.CallSession{CallID: uuid.NewString(), CallerNumber: req.CallerNumber, ChannelID: req.ChannelID, CurrentState: dialogue.StateMenu, CreatedAt: now, LastActivityAt: now}
-	entry := &session{call: call, cache: map[string]cached{}, id: call.CallID, channel: call.ChannelID, caller: call.CallerNumber}
+	entry := &session{call: call, cache: map[string]cached{}, id: call.CallID, channel: call.ChannelID}
 	entry.mu.Lock()
 	s.sessions[call.CallID] = entry
 	s.mu.Unlock()
@@ -250,10 +258,6 @@ func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "unknown or expired call")
 		return
 	}
-	if pending := e.interrupted.Load(); pending != nil {
-		write(w, 200, Response{StepResult: pending.result, CallID: e.id, TurnID: req.TurnID})
-		return
-	}
 	if !e.mu.TryLock() {
 		problem(w, 409, "another turn is in progress")
 		return
@@ -265,7 +269,23 @@ func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 			problem(w, 409, "turn_id was already used for another utterance")
 			return
 		}
-		write(w, 200, c.response)
+		response := c.response
+		if pending := e.interrupted.Load(); pending != nil {
+			response.StepResult = pending.result
+		}
+		write(w, 200, response)
+		return
+	}
+	if e.closed.Load() {
+		problem(w, 410, "call is closed")
+		return
+	}
+	if pending := e.interrupted.Load(); pending != nil {
+		write(w, 200, Response{StepResult: pending.result, CallID: e.id, TurnID: req.TurnID})
+		return
+	}
+	if e.turns >= 256 {
+		problem(w, 429, "call turn capacity reached")
 		return
 	}
 	requestContext := diagnostics.WithTranscript(diagnostics.WithCall(r.Context(), e.id), s.cfg.Trace)
@@ -273,6 +293,15 @@ func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	e.control.Lock()
+	if pending := e.interrupted.Load(); pending != nil || e.closed.Load() {
+		e.control.Unlock()
+		if pending != nil {
+			write(w, 200, Response{StepResult: pending.result, CallID: e.id, TurnID: req.TurnID})
+		} else {
+			problem(w, 410, "call is closed")
+		}
+		return
+	}
 	e.turnCancel = cancel
 	e.control.Unlock()
 	defer func() {
@@ -297,29 +326,27 @@ func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 		patientID = int64(e.call.Patient.ID)
 	}
 	e.patientID.Store(patientID)
+	settleCtx, settleCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer settleCancel()
 	response := Response{StepResult: result, CallID: e.call.CallID, Scenario: e.call.CurrentScenario, TurnID: req.TurnID}
 	if pending := e.interrupted.Load(); pending != nil {
 		response.StepResult = pending.result
 		e.call.CurrentState = dialogue.StateTransfer
 		e.call.TransferTarget = pending.result.TransferTarget
-		if err := s.cfg.Slots.Release(context.WithoutCancel(ctx), e.id); err != nil {
+		if err := s.cfg.Slots.Release(settleCtx, e.id); err != nil {
 			slog.Error("release interrupted hold", "error", err)
 		}
 	}
 	if req.TurnID != "" {
 		e.cache[req.TurnID] = cached{hash: hash, response: response}
-		e.order = append(e.order, req.TurnID)
-		if len(e.order) > 16 {
-			delete(e.cache, e.order[0])
-			e.order = e.order[1:]
-		}
+
 	}
 	if result.Outcome != "" {
-		if err := s.cfg.Store.Event(context.WithoutCancel(ctx), result.Outcome); err != nil {
+		if err := s.cfg.Store.Event(settleCtx, result.Outcome); err != nil {
 			slog.Error("record outcome metric", "error", err)
 		}
 		if e.call.OutboundVisitID > 0 && s.cfg.Campaign != nil {
-			if err := s.cfg.Campaign.Outcome(context.WithoutCancel(ctx), e.call.OutboundVisitID, result.Outcome); err != nil {
+			if err := s.cfg.Campaign.Outcome(settleCtx, e.call.OutboundVisitID, result.Outcome); err != nil {
 				slog.Error("record reminder outcome", "error", err)
 			}
 		}
@@ -350,6 +377,12 @@ func (s *Server) end(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "unknown call")
 		return
 	}
+	e.control.Lock()
+	e.closed.Store(true)
+	if e.turnCancel != nil {
+		e.turnCancel()
+	}
+	e.control.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if err := s.cfg.Slots.Release(r.Context(), e.call.CallID); err != nil {
@@ -431,6 +464,11 @@ func (s *Server) interrupt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e.control.Lock()
+	if e.closed.Load() {
+		e.control.Unlock()
+		problem(w, 410, "call is closed")
+		return
+	}
 	if old := e.interrupted.Load(); old != nil && old.priority >= gate.Priority() {
 		e.control.Unlock()
 		write(w, 200, Response{StepResult: old.result, CallID: e.id})
@@ -441,30 +479,38 @@ func (s *Server) interrupt(w http.ResponseWriter, r *http.Request) {
 	}
 	result := dialogue.StepResult{NextState: dialogue.StateTransfer, BotSpeech: gate.BotResponse, TransferTarget: gate.Extension(), Outcome: "TRANSFERRED"}
 	result.ReasonCode = gate.ActionCode
-	e.interrupted.Store(&interruptResult{result: result, priority: gate.Priority()})
+	pending := &interruptResult{result: result, priority: gate.Priority()}
+	e.interrupted.Store(pending)
 	e.control.Unlock()
 
-	if s.cfg.Slots != nil {
-		if err := s.cfg.Slots.Release(r.Context(), e.id); err != nil {
-			slog.Error("release slot on interrupt", "error", err)
+	// Disk contention must not delay emergency speech. Persistence gets a
+	// bounded independent context; publication uses CAS so a late low-priority
+	// job cannot overwrite a newer emergency interruption.
+	patientID := int(e.patientID.Load())
+	s.background.Add(1)
+	go func() {
+		defer s.background.Done()
+		c, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := s.cfg.Slots.Release(c, e.id); err != nil {
+			slog.Error("release interrupted hold", "error", err)
 		}
-	}
-	if s.cfg.Escalate != nil {
-		reason := gate.ActionCode + "; звонок: " + e.id
-		if err := s.cfg.Escalate(r.Context(), int(e.patientID.Load()), reason); err == nil {
-			result.EscalationQueued = true
-			e.interrupted.Store(&interruptResult{result: result, priority: gate.Priority()})
-		} else {
-			slog.Error("persist call interruption", "error", err)
+		if s.cfg.Escalate != nil {
+			if err := s.cfg.Escalate(c, patientID, gate.ActionCode+"; звонок: "+e.id); err == nil {
+				queued := pending.result
+				queued.EscalationQueued = true
+				e.interrupted.CompareAndSwap(pending, &interruptResult{result: queued, priority: pending.priority})
+			} else {
+				slog.Error("persist call interruption", "error", err)
+			}
 		}
-	}
+		if err := s.cfg.Store.Event(c, "INTERRUPTED"); err != nil {
+			slog.Error("record interruption metric", "error", err)
+		}
+	}()
+
 	if s.cfg.Trace != nil {
 		s.cfg.Trace.Info("call_interrupted", "call_id", e.id, "text", req.Text, "reason_code", gate.ActionCode, "transfer_target", result.TransferTarget, "bot_speech", result.BotSpeech)
-	}
-	if s.cfg.Store != nil {
-		if err := s.cfg.Store.Event(r.Context(), "INTERRUPTED"); err != nil {
-			slog.Error("record interruption", "error", err)
-		}
 	}
 	write(w, 200, Response{StepResult: result, CallID: e.id})
 }
@@ -604,6 +650,11 @@ func (s *Server) Expire(ctx context.Context, now time.Time) {
 		if !e.mu.TryLock() {
 			continue
 		}
+		if !e.closed.Load() && e.call.OutboundVisitID > 0 && s.cfg.Campaign != nil && e.call.CurrentState != dialogue.StateTransfer && e.call.CurrentState != dialogue.StateDone && now.Sub(e.call.LastActivityAt) <= s.cfg.SessionTTL {
+			if err := s.cfg.Campaign.ExtendLease(ctx, e.call.OutboundVisitID, 4*time.Minute); err != nil {
+				slog.Warn("extend active reminder lease", "error", err)
+			}
+		}
 		ttl := s.cfg.SessionTTL
 		if e.call.CurrentState == dialogue.StateDone || e.call.CurrentState == dialogue.StateTransfer {
 			ttl = time.Minute
@@ -639,4 +690,68 @@ func (s *Server) RunJanitor(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (s *Server) WaitBackground(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() { s.background.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Server) slotClaims(w http.ResponseWriter, r *http.Request) {
+	claims, err := s.cfg.Slots.ReviewClaims(r.Context())
+	if err != nil {
+		problem(w, 503, "slot claims unavailable")
+		return
+	}
+	write(w, 200, claims)
+}
+
+func (s *Server) reconcileClaims(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	visits, err := s.cfg.MIS.ListVisits(ctx, 0, "")
+	if err != nil {
+		problem(w, 502, "MIS reconciliation read failed")
+		return
+	}
+	if err := s.cfg.Slots.Reconcile(ctx, visits); err != nil {
+		problem(w, 503, "slot reconciliation failed")
+		return
+	}
+	s.slotClaims(w, r)
+}
+
+func (s *Server) reviewEscalations(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.cfg.Store.ReadDB().QueryContext(r.Context(), "SELECT id,status,mis_id,attempts FROM escalations WHERE status IN ('UNCERTAIN','SENDING','FAILED') ORDER BY created_at,id")
+	if err != nil {
+		problem(w, 503, "outbox unavailable")
+		return
+	}
+	defer rows.Close()
+	type item struct {
+		ID       string `json:"id"`
+		Status   string `json:"status"`
+		MISID    int    `json:"mis_id"`
+		Attempts int    `json:"attempts"`
+	}
+	items := []item{}
+	for rows.Next() {
+		var i item
+		if err := rows.Scan(&i.ID, &i.Status, &i.MISID, &i.Attempts); err != nil {
+			problem(w, 503, "outbox unavailable")
+			return
+		}
+		items = append(items, i)
+	}
+	if rows.Err() != nil {
+		problem(w, 503, "outbox unavailable")
+		return
+	}
+	write(w, 200, items)
 }

@@ -7,12 +7,14 @@ This is a diagnostic phone, not a reusable SIP implementation.
 
 import asyncio
 import hashlib
+import os
 import re
 import socket
 import struct
 import subprocess
 import time
 import uuid
+from pathlib import Path
 
 from client import VoiceClient
 
@@ -27,11 +29,27 @@ def parse(message: bytes):
     return lines[0], fields, body
 
 
+def sip_password(number: str) -> str:
+    key = "SIP_TEST_PASSWORD" if number == "200" else f"SIP_OPERATOR_{number}_PASSWORD"
+    if password := os.getenv(key):
+        return password
+    auth = Path(__file__).resolve().parent.parent / "var/asterisk/pjsip_auth.conf"
+    section = "test200" if number == "200" else f"{number}-auth"
+    current = ""
+    if auth.exists():
+        for line in auth.read_text().splitlines():
+            if match := re.match(r"\[([^]]+)\]", line):
+                current = match[1]
+            elif current == section and line.startswith("password="):
+                return line.partition("=")[2].strip()
+    raise RuntimeError(f"SIP account {number} is not configured; run make setup")
+
+
 class Phone:
-    def __init__(self, number="200", password="testpass"):
+    def __init__(self, number="200", password=None):
         if number not in {"200", "101", "104", "105"}:
             raise ValueError("only loopback diagnostic accounts are allowed")
-        self.number, self.password = number, password
+        self.number, self.password = number, password or sip_password(number)
         self.sip = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sip.bind(("127.0.0.1", 0))
         self.sip.setblocking(False)
@@ -43,6 +61,7 @@ class Phone:
         self.dialog = None
         self.queue = asyncio.Queue()
         self.last_voice = 0.0
+        self.response_after = 0.0
         self.voice_seen = asyncio.Event()
         self.connected = asyncio.Event()
         self.tasks = []
@@ -65,6 +84,7 @@ class Phone:
             raise RuntimeError("diagnostic only accepts loopback RTP")
         self.target = (address[1], int(port[1]))
         self.last_voice = 0
+        self.response_after = 0.0
         self.voice_seen.clear()
         self.connected.set()
 
@@ -159,10 +179,18 @@ class Phone:
                     queue.put_nowait((first, fields, body))
             elif first.startswith("BYE") or first.startswith("OPTIONS"):
                 await loop.sock_sendto(self.sip, self.reply(fields, "200 OK"), peer)
-                if first.startswith("BYE"):
+                if (
+                    first.startswith("BYE")
+                    and self.dialog
+                    and fields.get("call-id") == self.dialog[0]
+                ):
                     self.target = None
             elif first.startswith("INVITE"):
                 self.media(body)
+                # Incoming reminders also need a dialog for a local BYE during
+                # cleanup; otherwise the PBX keeps the test call until timeout.
+                remote_uri = fields.get("contact", "<sip:127.0.0.1>").strip("<>")
+                self.dialog = (fields["call-id"], "diagnostic", 1, fields["from"], remote_uri)
                 await loop.sock_sendto(self.sip, self.reply(fields, "200 OK", self.sdp()), peer)
 
     def reply(self, fields, status, body=""):
@@ -201,9 +229,10 @@ class Phone:
             sample = (((u & 15) << 3) + 132) << ((u >> 4) & 7)
             levels.append((sample - 132) ** 2)
         while True:
-            packet, _ = await loop.sock_recvfrom(self.rtp, 4096)
+            packet, peer = await loop.sock_recvfrom(self.rtp, 4096)
             if (
-                len(packet) > 12
+                peer == self.target
+                and len(packet) > 12
                 and sum(levels[v] for v in packet[12:]) / (len(packet) - 12) > 10000
             ):
                 self.last_voice = time.monotonic()
@@ -211,7 +240,11 @@ class Phone:
 
     async def wait_bot(self):
         async with asyncio.timeout(40):
-            await self.voice_seen.wait()
+            # Late packets from the previous reply must not satisfy the wait
+            # for the answer to a newly transmitted patient utterance.
+            while not self.voice_seen.is_set() or self.last_voice < self.response_after:
+                self.voice_seen.clear()
+                await self.voice_seen.wait()
             while True:
                 remaining = 0.9 - (time.monotonic() - self.last_voice)
                 if remaining <= 0:
@@ -220,6 +253,8 @@ class Phone:
         self.voice_seen.clear()
 
     async def say(self, audio):
+        if self.target is None:
+            raise RuntimeError("SIP call ended before the next utterance")
         encoded = await asyncio.to_thread(
             subprocess.run,
             [
@@ -242,7 +277,9 @@ class Phone:
         )
         for i in range(0, len(encoded.stdout), 160):
             self.queue.put_nowait(encoded.stdout[i : i + 160].ljust(160, b"\xff"))
-        await self.queue.join()
+        async with asyncio.timeout(len(encoded.stdout) / 8000 + 5):
+            await self.queue.join()
+        self.response_after = time.monotonic()
 
     async def close(self):
         with_context = self.target is not None
@@ -271,6 +308,8 @@ async def main():
     phone = Phone()
     try:
         await asyncio.to_thread(client.wait_ready)
+        await asyncio.to_thread(client.require_mock)
+        before = {v["id"] for v in await asyncio.to_thread(client.visits)}
         await phone.start()
         await phone.request("INVITE", "sip:700@127.0.0.1", phone.sdp())
         await phone.wait_bot()
@@ -288,8 +327,9 @@ async def main():
             await phone.wait_bot()
             print("SIP turn completed")
         visits = await asyncio.to_thread(client.visits)
-        assert any(v["status"] == "Отменена" for v in visits), (
-            "SIP dialogue did not cancel its visit"
+        created = [v for v in visits if v["id"] not in before]
+        assert len(created) == 1 and created[0]["status"] == "Отменена", (
+            "SIP dialogue must create and cancel exactly its own visit"
         )
         print("SIP/RTP smoke passed through Asterisk, local speech models and the MIS mock.")
     finally:

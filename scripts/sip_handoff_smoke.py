@@ -11,9 +11,10 @@ async def main():
     client = VoiceClient()
     try:
         await asyncio.to_thread(client.wait_ready)
+        await asyncio.to_thread(client.require_mock)
         for number, phrase in [("101", "Соедините с оператором"), ("104", "Не могу дышать")]:
             caller = Phone()
-            operator = Phone(number, "operatorpass")
+            operator = Phone(number)
             try:
                 await caller.start()
                 await operator.start()

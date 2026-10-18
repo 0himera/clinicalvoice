@@ -9,65 +9,6 @@ import (
 	"time"
 )
 
-func TestDecisionClient_VitalThreatFailClosed(t *testing.T) {
-	// Case 1: Server returns HTTP 500 error -> Must fail closed (isThreat = true)
-	server500 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server500.Close()
-
-	client := NewDecisionClient(server500.URL, "", true)
-	isThreat, _, err := client.DecideVitalThreat(context.Background(), "болит в груди")
-	if err == nil {
-		t.Fatalf("expected error on 500")
-	}
-	if !isThreat {
-		t.Fatalf("expected fail-closed isThreat=true on server error")
-	}
-
-	// Case 2: Server returns high P(threat) -> isThreat = true
-	serverThreat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := DecisionResponse{
-			Model: "THX-01",
-			Answers: map[string]DecisionAnswer{
-				"vital_threat": {
-					Type: TypeNoul,
-					Noul: 0.98,
-				},
-			},
-		}
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer serverThreat.Close()
-
-	clientThreat := NewDecisionClient(serverThreat.URL, "", true)
-	isThreat, p, err := clientThreat.DecideVitalThreat(context.Background(), "давит в груди и трудно дышать")
-	if err != nil || !isThreat || p < 0.9 {
-		t.Fatalf("expected real threat: isThreat=%v, p=%v, err=%v", isThreat, p, err)
-	}
-
-	// Case 3: Metaphor / Negation where P(threat) < 0.15 -> isThreat = false
-	serverMetaphor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := DecisionResponse{
-			Model: "THX-01",
-			Answers: map[string]DecisionAnswer{
-				"vital_threat": {
-					Type: TypeNoul,
-					Noul: 0.02,
-				},
-			},
-		}
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer serverMetaphor.Close()
-
-	clientMetaphor := NewDecisionClient(serverMetaphor.URL, "", true)
-	isThreat, p, err = clientMetaphor.DecideVitalThreat(context.Background(), "сердце кровью обливается")
-	if err != nil || isThreat || p >= 0.15 {
-		t.Fatalf("expected false alarm filtered: isThreat=%v, p=%v, err=%v", isThreat, p, err)
-	}
-}
-
 func TestDecisionClient_ConfirmationAndAside(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req DecisionRequest
@@ -252,4 +193,3 @@ func TestDecisionClient_DecideNLU(t *testing.T) {
 		t.Fatalf("unexpected nlu result: %+v", nlu)
 	}
 }
-

@@ -151,8 +151,19 @@ func (sm *SlotManager) HoldSlot(ctx context.Context, id int, at time.Time, owner
 }
 
 func (sm *SlotManager) PurgeExpired(ctx context.Context) error {
-	_, err := sm.store.DB.ExecContext(ctx, "DELETE FROM slot_claims WHERE status='held' AND expires_at<=?", time.Now().Unix())
-	return err
+	tx, err := sm.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().Unix()
+	if _, err = tx.ExecContext(ctx, "DELETE FROM slot_claims WHERE status='held' AND expires_at<=?", now); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "UPDATE slot_claims SET status='uncertain',expires_at=0 WHERE status='pending' AND expires_at<=?", now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (sm *SlotManager) Release(ctx context.Context, owner string) error {
@@ -160,14 +171,21 @@ func (sm *SlotManager) Release(ctx context.Context, owner string) error {
 	return err
 }
 func (sm *SlotManager) MarkPending(ctx context.Context, s models.Slot, owner string) error {
+	return sm.MarkPendingVisit(ctx, s, owner, 0)
+}
+
+func (sm *SlotManager) MarkPendingVisit(ctx context.Context, s models.Slot, owner string, visitID int) error {
 	if !sm.bookable[slotKey(s.DoctorID, s.StartTime)] || s.StartTime.Before(time.Now().Add(30*time.Minute)) {
 		return ErrUnavailable
 	}
-	r, err := sm.store.DB.ExecContext(ctx, "UPDATE slot_claims SET status='pending' WHERE doctor_id=? AND starts_at=? AND owner=? AND status='held' AND expires_at>?", s.DoctorID, s.StartTime.UTC().Format(time.RFC3339), owner, time.Now().Unix())
+	r, err := sm.store.DB.ExecContext(ctx, "UPDATE slot_claims SET status='pending',visit_id=?,expires_at=? WHERE doctor_id=? AND starts_at=? AND owner=? AND status='held' AND expires_at>?", visitID, time.Now().Add(time.Minute).Unix(), s.DoctorID, s.StartTime.UTC().Format(time.RFC3339), owner, time.Now().Unix())
 	if err != nil {
 		return err
 	}
-	n, _ := r.RowsAffected()
+	n, err := r.RowsAffected()
+	if err != nil {
+		return err
+	}
 	if n != 1 {
 		return ErrUnavailable
 	}
@@ -179,7 +197,7 @@ func (sm *SlotManager) Resolve(ctx context.Context, s models.Slot, owner string,
 		status = "uncertain"
 	}
 	if visitID == 0 && !uncertain {
-		_, err := sm.store.DB.ExecContext(ctx, "DELETE FROM slot_claims WHERE doctor_id=? AND starts_at=? AND owner=? AND status='pending'", s.DoctorID, s.StartTime.UTC().Format(time.RFC3339), owner)
+		_, err := sm.store.DB.ExecContext(ctx, "DELETE FROM slot_claims WHERE doctor_id=? AND starts_at=? AND owner=? AND status IN ('pending','uncertain')", s.DoctorID, s.StartTime.UTC().Format(time.RFC3339), owner)
 		return err
 	}
 	tx, err := sm.store.DB.BeginTx(ctx, nil)
@@ -192,11 +210,14 @@ func (sm *SlotManager) Resolve(ctx context.Context, s models.Slot, owner string,
 			return err
 		}
 	}
-	r, err := tx.ExecContext(ctx, "UPDATE slot_claims SET status=?,visit_id=?,expires_at=0 WHERE doctor_id=? AND starts_at=? AND owner=? AND status='pending'", status, visitID, s.DoctorID, s.StartTime.UTC().Format(time.RFC3339), owner)
+	r, err := tx.ExecContext(ctx, "UPDATE slot_claims SET status=?,visit_id=CASE WHEN ?>0 THEN ? ELSE visit_id END,expires_at=0 WHERE doctor_id=? AND starts_at=? AND owner=? AND status IN ('pending','uncertain')", status, visitID, visitID, s.DoctorID, s.StartTime.UTC().Format(time.RFC3339), owner)
 	if err != nil {
 		return err
 	}
-	n, _ := r.RowsAffected()
+	n, err := r.RowsAffected()
+	if err != nil {
+		return err
+	}
 	if n != 1 {
 		return ErrUnavailable
 	}
@@ -217,6 +238,9 @@ func (sm *SlotManager) SyncVisits(ctx context.Context, visits []models.Visit) er
 	}
 	for _, v := range visits {
 		if v.Status != models.VisitPlanned {
+			if _, err = tx.ExecContext(ctx, "DELETE FROM slot_claims WHERE visit_id=? AND status='uncertain'", v.ID); err != nil {
+				return err
+			}
 			continue
 		}
 		at, err := models.ParseDateTime(v.ScheduledAt)
@@ -249,4 +273,72 @@ func (sm *SlotManager) GetDoctor(id int) (models.Doctor, bool) {
 }
 func (sm *SlotManager) ListDoctors() []models.Doctor {
 	return append([]models.Doctor(nil), sm.doctors...)
+}
+
+// ReviewClaims exposes unsettled operations without patient data. Expiry never
+// makes an unknown write safe to repeat or its slot safe to reuse.
+type ReviewClaim struct {
+	DoctorID int    `json:"doctor_id"`
+	StartsAt string `json:"starts_at"`
+	Owner    string `json:"call_id"`
+	Status   string `json:"status"`
+	VisitID  int    `json:"visit_id"`
+}
+
+func (sm *SlotManager) ReviewClaims(ctx context.Context) ([]ReviewClaim, error) {
+	rows, err := sm.store.ReadDB().QueryContext(ctx, "SELECT doctor_id,starts_at,owner,status,visit_id FROM slot_claims WHERE status IN ('pending','uncertain') ORDER BY starts_at,doctor_id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	claims := []ReviewClaim{}
+	for rows.Next() {
+		var c ReviewClaim
+		if err := rows.Scan(&c.DoctorID, &c.StartsAt, &c.Owner, &c.Status, &c.VisitID); err != nil {
+			return nil, err
+		}
+		claims = append(claims, c)
+	}
+	return claims, rows.Err()
+}
+
+// Reconcile settles only uncertain claims proven by a MIS read. Unlike startup
+// SyncVisits, it must not replace booked claims from a potentially stale
+// snapshot while calls are creating or moving visits.
+func (sm *SlotManager) Reconcile(ctx context.Context, visits []models.Visit) error {
+	tx, err := sm.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, visit := range visits {
+		if visit.Status == models.VisitCancelled || visit.Status == models.VisitCompleted {
+			if _, err := tx.ExecContext(ctx, "DELETE FROM slot_claims WHERE visit_id=? AND status='uncertain'", visit.ID); err != nil {
+				return err
+			}
+			continue
+		}
+		if visit.Status != models.VisitPlanned {
+			continue
+		}
+		at, err := models.ParseDateTime(visit.ScheduledAt)
+		if err != nil {
+			return err
+		}
+		starts := at.UTC().Format(time.RFC3339)
+		result, err := tx.ExecContext(ctx, "UPDATE slot_claims SET status='booked',visit_id=?,expires_at=0 WHERE doctor_id=? AND starts_at=? AND status='uncertain' AND (visit_id=0 OR visit_id=?)", visit.ID, visit.Doctor.ID, starts, visit.ID)
+		if err != nil {
+			return err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count > 0 {
+			if _, err := tx.ExecContext(ctx, "DELETE FROM slot_claims WHERE visit_id=? AND status='booked' AND NOT(doctor_id=? AND starts_at=?)", visit.ID, visit.Doctor.ID, starts); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
 }

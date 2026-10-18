@@ -58,9 +58,34 @@ func (s *Service) technicalClient(ctx context.Context) (int, error) {
 	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, err
 	}
+	clients, err := s.mis.FindClients(ctx, "Вызов", "Срочный", "01.01.2000")
+	if err != nil {
+		return 0, err
+	}
+	if len(clients) > 1 {
+		return 0, errors.New("technical client requires reconciliation")
+	}
+	if len(clients) == 1 {
+		return clients[0].ID, s.store.Put(ctx, "technical_client_id", clients[0].ID)
+	}
+	var pending bool
+	if err := s.store.Get(ctx, "technical_client_pending", &pending); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	if pending {
+		return 0, errors.New("technical client creation outcome requires reconciliation")
+	}
+	if err := s.store.Put(ctx, "technical_client_pending", true); err != nil {
+		return 0, fmt.Errorf("%w: %w", misclient.ErrNotSent, err)
+	}
 	middle := "Технический"
 	c, err := s.mis.CreateClient(ctx, models.ClientCreate{LastName: "Вызов", FirstName: "Срочный", MiddleName: &middle, BirthDate: "01.01.2000"})
 	if err != nil {
+		if !misclient.Ambiguous(err) {
+			settle, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+			defer cancel()
+			err = errors.Join(err, s.store.Put(settle, "technical_client_pending", false))
+		}
 		return 0, err
 	}
 	return c.ID, s.store.Put(ctx, "technical_client_id", c.ID)
@@ -70,7 +95,7 @@ func (s *Service) technicalClient(ctx context.Context) (int, error) {
 // job is marked UNCERTAIN on restart rather than causing a duplicate POST.
 func (s *Service) Drain(ctx context.Context) error {
 	now := time.Now().Unix()
-	if _, err := s.store.DB.ExecContext(ctx, "UPDATE escalations SET status='PENDING', lease_until=0 WHERE status='SENDING' AND lease_until<=?", now); err != nil {
+	if _, err := s.store.DB.ExecContext(ctx, "UPDATE escalations SET status='UNCERTAIN', lease_until=0 WHERE status='SENDING' AND lease_until<=?", now); err != nil {
 		return err
 	}
 
@@ -94,18 +119,33 @@ func (s *Service) Drain(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n != 1 {
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
 		return nil
 	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}
 
+	settle := func(status string, misID int) error {
+		settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		defer cancel()
+		_, err := s.store.DB.ExecContext(settleCtx, "UPDATE escalations SET status=?,mis_id=?,lease_until=0 WHERE id=? AND status IN ('SENDING','UNCERTAIN')", status, misID, id)
+		return err
+	}
 	if clientID == 0 {
 		clientID, err = s.technicalClient(ctx)
 		if err != nil {
-			_, _ = s.store.DB.ExecContext(context.WithoutCancel(ctx), "UPDATE escalations SET status='PENDING',lease_until=0 WHERE id=? AND status='SENDING'", id)
-			return err
+			status := "FAILED"
+			var api *misclient.APIError
+			if errors.Is(err, misclient.ErrNotSent) || (errors.As(err, &api) && api.StatusCode == 429) {
+				status = "PENDING"
+			}
+			if misclient.Ambiguous(err) {
+				status = "UNCERTAIN"
+			}
+			return errors.Join(err, settle(status, 0))
 		}
 	}
 	cleanDesc := SanitizeDescription(description)
@@ -115,7 +155,7 @@ func (s *Service) Drain(ctx context.Context) error {
 	if sendErr != nil {
 		status = "FAILED"
 		var api *misclient.APIError
-		if errors.As(sendErr, &api) && api.StatusCode == 429 {
+		if errors.Is(sendErr, misclient.ErrNotSent) || (errors.As(sendErr, &api) && api.StatusCode == 429) {
 			status = "PENDING"
 		} else if misclient.Ambiguous(sendErr) {
 			status = "UNCERTAIN"
@@ -123,8 +163,7 @@ func (s *Service) Drain(ctx context.Context) error {
 	} else {
 		misID = e.ID
 	}
-	_, err = s.store.DB.ExecContext(context.WithoutCancel(ctx), "UPDATE escalations SET status=?,mis_id=?,lease_until=0 WHERE id=? AND status='SENDING'", status, misID, id)
-	return errors.Join(sendErr, err)
+	return errors.Join(sendErr, settle(status, misID))
 }
 
 func (s *Service) Run(ctx context.Context) {
@@ -139,7 +178,7 @@ func (s *Service) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			jobCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+			jobCtx, cancel := context.WithTimeout(misclient.Background(ctx), 25*time.Second)
 			err := s.Drain(jobCtx)
 			cancel()
 			if err != nil && !errors.Is(err, context.Canceled) {

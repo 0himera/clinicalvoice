@@ -24,6 +24,10 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        if services is None and not settings.api_token:
+            raise RuntimeError("AI_API_TOKEN is required; run make setup")
+        if services is None and settings.telephony and not settings.core_token:
+            raise RuntimeError("CORE_API_TOKEN is required for telephony; run make setup")
         app.state.services = services or await asyncio.to_thread(
             load_services, settings.device, settings
         )
@@ -46,10 +50,10 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
     @app.middleware("http")
     async def authenticate(request: Request, call_next):
         path = request.url.path.rstrip("/")
-        if settings.api_token and path not in ("/health", "/healthz", "/readyz"):
+        if path not in ("/health", "/healthz", "/readyz"):
             expected = ("Bearer " + settings.api_token).encode("utf-8")
             provided = request.headers.get("authorization", "").encode("utf-8")
-            if not secrets.compare_digest(
+            if not settings.api_token or not secrets.compare_digest(
                 hashlib.sha256(provided).digest(),
                 hashlib.sha256(expected).digest(),
             ):
@@ -71,7 +75,8 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
             "device": ready.device,
             "asr_ready": True,
             "tts_ready": True,
-            "decision_ready": getattr(ready, "decision", None) is not None,
+            "decision_ready": getattr(ready, "decision", None) is not None
+            and getattr(ready.decision, "model_name", "") != "disabled",
         }
 
     @app.post("/asr")
@@ -118,7 +123,18 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
         t0 = time.perf_counter()
         try:
             async with asyncio.timeout(5):
-                answers = await ready.decision.decide_async(req.state, req.questions)
+                job = asyncio.create_task(ready.decision.decide_async(req.state, req.questions))
+                try:
+                    while True:
+                        done, _ = await asyncio.wait({job}, timeout=0.05)
+                        if await request.is_disconnected():
+                            return Response(status_code=499)
+                        if done:
+                            answers = job.result()
+                            break
+                finally:
+                    job.cancel()
+                    await asyncio.gather(job, return_exceptions=True)
                 if (
                     isinstance(answers, dict)
                     and "answers" in answers
@@ -138,7 +154,11 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
         logger.info(
             "Decision request evaluated in %.1f ms (%d questions)", elapsed_ms, len(req.questions)
         )
-        return {"model": "THX-01", "answers": answers, "latency_ms": elapsed_ms}
+        return {
+            "model": getattr(ready.decision, "model_name", "custom"),
+            "answers": answers,
+            "latency_ms": elapsed_ms,
+        }
 
     return app
 

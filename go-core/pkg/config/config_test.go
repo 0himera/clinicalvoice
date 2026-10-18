@@ -107,4 +107,3 @@ func TestCoreAPITokenRequired(t *testing.T) {
 		t.Fatalf("valid CORE_API_TOKEN rejected: %v", err)
 	}
 }
-

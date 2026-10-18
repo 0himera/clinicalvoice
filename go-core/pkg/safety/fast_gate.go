@@ -8,10 +8,6 @@ import (
 	"github.com/himera/tochka-voice/go-core/pkg/models"
 )
 
-type DecisionThreatDecider interface {
-	DecideVitalThreat(ctx context.Context, utterance string) (isThreat bool, pTrue float64, err error)
-}
-
 const (
 	ActionEmergency   = "R-01"
 	ActionOperatorReq = "R-02"
@@ -61,84 +57,86 @@ func (r SafetyResult) Priority() int {
 	return 0
 }
 
+type gatePattern struct {
+	expression *regexp.Regexp
+	intrinsic  bool // The negative predicate itself denotes the emergency.
+}
+
 type FastGate struct {
-	catAPatternRegexes     []*regexp.Regexp
-	categoryARegex         *regexp.Regexp
-	categoryBRegex         *regexp.Regexp
+	catAPatternRegexes     []gatePattern
+	categoryBRegexes       []*regexp.Regexp
 	operatorReqRegex       *regexp.Regexp
 	operatorNegationRegex  *regexp.Regexp
 	complaintRegex         *regexp.Regexp
 	complaintNegationRegex *regexp.Regexp
-	threatDecider          DecisionThreatDecider
-}
-
-func (fg *FastGate) SetThreatDecider(d DecisionThreatDecider) {
-	fg.threatDecider = d
 }
 
 func NewFastGate() *FastGate {
 	// Категория А: Угроза жизни (Регламент 7.4, Сценарий С-14)
-	catAPatterns := []string{
-		`(бол[ьиея].*в.*груд[ие]|в.*груд[ие].*бол[ьиея])`,
-		`((дав[ия]т.*(за.*грудин|в.*груд|сердц))|((за.*грудин|в.*груд|сердц).*дав[ия]т))`,
-		`((жж|печ)[её]т.*в.*груд|в.*груд.*(жж|печ)[её]т)`,
-		`(отда[её]т.*в.*(лев|руку)|(лев|руку).*отда[её]т)`,
-		`сердечн.*приступ`,
-		`инфаркт`,
-		`((не.*мож[ееё]т|трудн|тяжел|нечем).*дышать|дышать.*(не.*мож[ееё]т|трудн|тяжел|нечем))`,
-		`(не.*могу.*дышать|дышать.*не.*могу)`,
-		`не.*дышит`,
-		`задыха`,
-		`не.*дышу`,
-		`(не.*хватает.*воздух|воздух.*не.*хватает)`,
-		`бол.*сердц|сердц.*бол`,
-		`тряс[её]т.*не.*останавлива`,
-		`кровь.*изо.*рта`,
-		`сильн.*ударил.*голов`,
-		`ожог.*больш`,
-		`отравил`,
-		`(выпил|проглотил).*?(хими|таблет)`,
-		`укусила.*змея`,
-		`не.*может.*глотать`,
-		`младен.*(вял|не.*просыпа)`,
-		`грудн.*реб[её]н.*температур`,
-		`реб[её]нок.*(посинел|проглотил)`,
-		`беремен.*кровотечен`,
-		`кровотечен.*беремен`,
-		`отошли.*воды`,
-		`сильн.*бол.*беремен`,
-		`начались.*схватк`,
-		`не.*хочу.*жить`,
-		`угрожа.*убить`,
-		`задыха[ею]т`,
-		`син[ее]ет`,
-		`хрип[ия]т`,
-		`подавилс[яя]`,
-		`потер[яя]л.*сознани`,
-		`без.*сознани`,
-		`не.*приход[ия]т.*в.*себя`,
-		`не.*могу.*разбудить`,
-		`упал.*в.*обморок`,
-		`перекосил.*лиц`,
-		`отнял[аи]сь.*(рука|нога)`,
-		`не.*может.*говорить`,
-		`речь.*невнятн`,
-		`онемел.*половин.*тел`,
-		`инсульт`,
-		`судорог`,
-		`припадок`,
-		`сильн.*кровотечени`,
-		`кровь.*не.*останавлива`,
-		`рвот.*кров`,
-		`дтп`,
-		`удар.*головой`,
-		`упал.*с.*высот`,
-		`отека[ею]т.*(горл|лиц)`,
-		`анафилактическ`,
-		`покончить.*с.*собой`,
-		`наглотал.*таблет`,
+	catAPatterns := []struct {
+		expression string
+		intrinsic  bool
+	}{
+		{`(бол[ьиея].*груд[ьи]|груд[ьи].*бол[ьиея])`, false},
+		{`((дав[ия]т.*(за.*грудин|в.*груд|сердц))|((за.*грудин|в.*груд|сердц).*дав[ия]т))`, false},
+		{`((жж|печ)[её]т.*в.*груд|в.*груд.*(жж|печ)[её]т)`, false},
+		{`(отда[её]т.*в.*(лев|руку)|(лев|руку).*отда[её]т)`, false},
+		{`сердечн.*приступ`, false},
+		{`инфаркт`, false},
+		{`удушь`, false},
+		{`((не\s+мож[ееё]т|трудн|тяжел|нечем).*дышать|дышать.*(не\s+мож[ееё]т|трудн|тяжел|нечем))`, true},
+		{`(не\s+могу.*дышать|дышать.*не\s+могу)`, true},
+		{`не\s+дышит`, true},
+		{`задыха`, false},
+		{`не\s+дышу`, true},
+		{`(не\s+хватает.*воздух|воздух.*не\s+хватает)`, true},
+		{`бол(?:ь|и|ит|ело|ят).*сердц|сердц.*бол(?:ь|и|ит|ело|ят)`, false},
+		{`тряс[её]т.*не.*останавлива`, true},
+		{`кровь.*изо.*рта`, false},
+		{`сильн.*ударил.*голов`, false},
+		{`ожог.*больш`, false},
+		{`отравил`, false},
+		{`(выпил|проглотил).*?(хими|таблет)`, false},
+		{`укусила.*змея`, false},
+		{`не\s+может.*глотать`, true},
+		{`младен.*(вял|не.*просыпа)`, true},
+		{`грудн.*реб[её]н.*температур`, false},
+		{`реб[её]нок.*(посинел|проглотил)`, false},
+		{`беремен.*кровотечен`, false},
+		{`кровотечен.*беремен`, false},
+		{`отошли.*воды`, false},
+		{`сильн.*бол.*беремен`, false},
+		{`начались.*схватк`, false},
+		{`не\s+хочу.*жить`, true},
+		{`угрожа.*убить`, false},
+		{`задыха[ею]т`, false},
+		{`син[ее]ет`, false},
+		{`хрип[ия]т`, false},
+		{`подавилс[яя]`, false},
+		{`потер[яя]л.*сознани`, false},
+		{`без.*сознани`, true},
+		{`не\s+приход[ия]т.*в.*себя`, true},
+		{`не\s+могу.*разбудить`, true},
+		{`упал.*в.*обморок`, false},
+		{`перекосил.*лиц`, false},
+		{`отнял[аи]сь.*(рука|нога)`, false},
+		{`не\s+может.*говорить`, true},
+		{`речь.*невнятн`, false},
+		{`онемел.*половин.*тел`, false},
+		{`инсульт`, false},
+		{`судорог`, false},
+		{`припадок`, false},
+		{`сильн.*кровотечени`, false},
+		{`кровь.*не.*останавлива`, true},
+		{`рвот.*кров`, false},
+		{`дтп`, false},
+		{`удар.*головой`, false},
+		{`упал.*с.*высот`, false},
+		{`отека[ею]т.*(горл|лиц)`, false},
+		{`анафилактическ`, false},
+		{`покончить.*с.*собой`, false},
+		{`наглотал.*таблет`, false},
 	}
-
 	// Категория Б: Острое состояние (Регламент 7.4)
 	catBPatterns := []string{
 		`очень.*сильн.*бол`,
@@ -160,6 +158,7 @@ func NewFastGate() *FastGate {
 	// Требование живого оператора (Регламент 7.3, R-02)
 	// Для человек и девушк требуются глаголы обращения/соединения, чтобы «запишите мою девушку», «я пожилой человек» не срывали диалог
 	operatorPatterns := []string{
+		`^\s*(человек|девушка)(\s+пожалуйста)?\s*$`,
 		`(^|[^а-яё])оператор`,
 		`(^|[^а-яё])сотрудник`,
 		`(^|[^а-яё])регистратор`,
@@ -184,6 +183,7 @@ func NewFastGate() *FastGate {
 	operatorNegPatterns := []string{
 		`(^|[^а-яё])не\s+(нуж[ее]н|перевод|соедин|надо\s+оператор)`,
 		`(^|[^а-яё])без\s+оператор`,
+		`оператор\p{L}*\s+не\s+(нужен|нужна|надо)`,
 	}
 	complaintNegPatterns := []string{
 		`(^|[^а-яё])не\s+(буду\s+жаловат|жалоба)`,
@@ -191,15 +191,19 @@ func NewFastGate() *FastGate {
 		`(^|[^а-яё])(жалоб\s+нет|нет\s+жалоб|жаловаться\s+не\s+буду)`,
 	}
 
-	catARegexes := make([]*regexp.Regexp, len(catAPatterns))
+	catARegexes := make([]gatePattern, len(catAPatterns))
 	for i, p := range catAPatterns {
-		catARegexes[i] = regexp.MustCompile(`(?i)` + p)
+		catARegexes[i] = gatePattern{regexp.MustCompile(`(?i)` + p.expression), p.intrinsic}
+	}
+
+	catBRegexes := make([]*regexp.Regexp, len(catBPatterns))
+	for i, p := range catBPatterns {
+		catBRegexes[i] = regexp.MustCompile(`(?i)` + p)
 	}
 
 	return &FastGate{
 		catAPatternRegexes:     catARegexes,
-		categoryARegex:         regexp.MustCompile(`(?i)` + strings.Join(catAPatterns, "|")),
-		categoryBRegex:         regexp.MustCompile(`(?i)` + strings.Join(catBPatterns, "|")),
+		categoryBRegexes:       catBRegexes,
 		operatorReqRegex:       regexp.MustCompile(`(?i)` + strings.Join(operatorPatterns, "|")),
 		operatorNegationRegex:  regexp.MustCompile(`(?i)` + strings.Join(operatorNegPatterns, "|")),
 		complaintRegex:         regexp.MustCompile(`(?i)` + strings.Join(complaintPatterns, "|")),
@@ -207,46 +211,34 @@ func NewFastGate() *FastGate {
 	}
 }
 
-// isNegated checks if the trigger word at byte position pos is negated in a narrow local window (1-2 words).
-// It stops scanning when crossing punctuation or conjunctions 'а', 'но'.
-func isNegated(text string, pos int) bool {
-	if pos <= 0 || pos > len(text) {
-		return false
-	}
-	runes := []rune(text[:pos])
-	i := len(runes) - 1
-	// Skip trailing whitespace
-	for i >= 0 && (runes[i] == ' ' || runes[i] == '\t' || runes[i] == '\n' || runes[i] == '\r') {
-		i--
-	}
-	wordCount := 0
-	for i >= 0 && wordCount < 2 {
-		r := runes[i]
-		// Punctuation stops the narrow local window
-		if r == ',' || r == '.' || r == '!' || r == '?' || r == ';' || r == ':' || r == '-' || r == '—' || r == '(' || r == ')' {
-			break
-		}
-		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-			i--
+// Negation is attached to a symptom predicate, never to an arbitrary nearby
+// word. In particular "не знаю, инфаркт" and "не могу терпеть боль в груди"
+// must retain the emergency. Intrinsic negatives ("не могу дышать") are threats.
+var symptomTerm = regexp.MustCompile(`бол(?:ь|и|ью|ей|ит|ят|ело)\p{L}*|дав[ия]т|жжет|печет|отдает|инфаркт\p{L}*|инсульт\p{L}*|судорог\p{L}*|кровотечен\p{L}*|задыха\p{L}*|припадок\p{L}*|беремен\p{L}*`)
+var directNegation = regexp.MustCompile(`(?:^|\s)(?:не|нет|без)\s+$|(?:^|\s)(?:нет|без)\s+(?:никакой|никаких|сильной|острой|невыносимой)\s+$`)
+var followingNegation = regexp.MustCompile(`^\p{L}*\s+(?:у\s+меня\s+)?(?:нет|не\s+было)(?:$|\s)`)
+var pregnant = regexp.MustCompile(`беремен\p{L}*`)
+var bleeding = regexp.MustCompile(`кровотечен\p{L}*`)
+var metaphor = regexp.MustCompile(`сердце\s+(?:кровью\s+обливается|болит\s+за\s+(?:команду|клуб|родину))`)
+
+func matchAffirmative(re *regexp.Regexp, clause string) string {
+	for _, loc := range re.FindAllStringIndex(clause, -1) {
+		match := clause[loc[0]:loc[1]]
+		if (strings.HasPrefix(match, "остр") || strings.HasPrefix(match, "невыносим")) && directNegation.MatchString(clause[:loc[0]]) {
 			continue
 		}
-		// Read word backwards
-		wordEnd := i + 1
-		for i >= 0 && runes[i] != ' ' && runes[i] != '\t' && runes[i] != '\n' && runes[i] != '\r' &&
-			runes[i] != ',' && runes[i] != '.' && runes[i] != '!' && runes[i] != '?' && runes[i] != ';' && runes[i] != ':' && runes[i] != '-' && runes[i] != '—' && runes[i] != '(' && runes[i] != ')' {
-			i--
+		terms := symptomTerm.FindAllStringIndex(match, -1)
+		if len(terms) == 0 {
+			return match
 		}
-		word := string(runes[i+1 : wordEnd])
-		// Conjunctions "а", "но" stop the narrow window
-		if word == "а" || word == "но" {
-			break
+		for _, term := range terms {
+			start, end := loc[0]+term[0], loc[0]+term[1]
+			if !directNegation.MatchString(clause[:start]) && !followingNegation.MatchString(clause[end:]) {
+				return match
+			}
 		}
-		if word == "не" || word == "нет" || word == "без" {
-			return true
-		}
-		wordCount++
 	}
-	return false
+	return ""
 }
 
 // Check проверяет входящий текст реплики пациента
@@ -254,100 +246,74 @@ func (fg *FastGate) Check(text string) SafetyResult {
 	return fg.CheckWithContext(context.Background(), text)
 }
 
-var clauseSplitRegex = regexp.MustCompile(`[,.;!?]+|\s+(?:а|но)\s+`)
+var clauseSplitRegex = regexp.MustCompile(`[,.;!?]+|\s+(?:а|но|и|однако)\s+`)
 
-func (fg *FastGate) matchUnsuppressedCatA(text string) (SafetyResult, bool) {
-	symptomKeywords := []string{"бол", "дав", "жж", "печ", "отда"}
-	for _, re := range fg.catAPatternRegexes {
-		locs := re.FindAllStringIndex(text, -1)
-		for _, loc := range locs {
-			matchStr := text[loc[0]:loc[1]]
-			negated := isNegated(text, loc[0])
-			if !negated {
-				for _, kw := range symptomKeywords {
-					if idx := strings.Index(matchStr, kw); idx >= 0 {
-						if isNegated(text, loc[0]+idx) {
-							negated = true
-							break
-						}
-					}
-				}
-			}
-			if !negated {
-				return SafetyResult{
-					Level:       models.FlagCategoryA,
-					MatchedText: matchStr,
-					ActionCode:  ActionEmergency,
-					RouteTarget: "M0", // 103/112
-					BotResponse: SpeechEmergency,
-				}, true
-			}
-		}
-	}
-	return SafetyResult{}, false
-}
-
-// CheckWithContext checks the utterance locally and instantaneously (< 1 ms).
+// CheckWithContext checks the utterance locally; no model or network call is made.
 // Normalizes 'ё' -> 'е' and guarantees fail-safe priority for unsuppressed Category A triggers.
 func (fg *FastGate) CheckWithContext(ctx context.Context, text string) SafetyResult {
-	norm := strings.TrimSpace(strings.ToLower(strings.ReplaceAll(text, "ё", "е")))
+	norm := strings.TrimSpace(strings.ReplaceAll(strings.ToLower(text), "ё", "е"))
 	if norm == "" {
 		return SafetyResult{Level: models.FlagNone}
 	}
 
-	// 1. Проверка Категории А (наивысший приоритет P1, безусловный триггер перевода!)
-	if fg.categoryARegex.MatchString(norm) {
-		// First check the whole text
-		if res, ok := fg.matchUnsuppressedCatA(norm); ok {
-			return res
-		}
-		// If whole-text was suppressed by cross-boundary negation (e.g. "не болит живот, а болит в груди"), evaluate per clause
-		clauses := clauseSplitRegex.Split(norm, -1)
-		for _, clause := range clauses {
-			clause = strings.TrimSpace(clause)
-			if clause != "" && fg.categoryARegex.MatchString(clause) {
-				if res, ok := fg.matchUnsuppressedCatA(clause); ok {
-					return res
-				}
+	if matchAffirmative(pregnant, norm) != "" && matchAffirmative(bleeding, norm) != "" {
+		return SafetyResult{Level: models.FlagCategoryA, ActionCode: ActionEmergency, RouteTarget: "M0", BotResponse: SpeechEmergency}
+	}
+	clauses := clauseSplitRegex.Split(norm, -1)
+	for _, clause := range clauses {
+		clause = metaphor.ReplaceAllString(clause, " ")
+		for _, rule := range fg.catAPatternRegexes {
+			match := rule.expression.FindString(clause)
+			if !rule.intrinsic {
+				match = matchAffirmative(rule.expression, clause)
+			}
+			if match != "" {
+				return SafetyResult{Level: models.FlagCategoryA, MatchedText: match,
+					ActionCode: ActionEmergency, RouteTarget: "M0", BotResponse: SpeechEmergency}
 			}
 		}
 	}
 
 	// 2. Требование человека (R-02)
-	if match := fg.operatorReqRegex.FindString(norm); match != "" {
-		if fg.operatorNegationRegex == nil || !fg.operatorNegationRegex.MatchString(norm) {
-			return SafetyResult{
-				Level:       models.FlagOperatorReq,
-				MatchedText: match,
-				ActionCode:  ActionOperatorReq,
-				RouteTarget: "M2", // Регистратор (доб. 101-105)
-				BotResponse: SpeechOperator,
+	for _, clause := range clauses {
+		if match := fg.operatorReqRegex.FindString(clause); match != "" {
+			if fg.operatorNegationRegex == nil || !fg.operatorNegationRegex.MatchString(clause) {
+				return SafetyResult{
+					Level:       models.FlagOperatorReq,
+					MatchedText: match,
+					ActionCode:  ActionOperatorReq,
+					RouteTarget: "M2", // Регистратор (доб. 101-105)
+					BotResponse: SpeechOperator,
+				}
 			}
 		}
+
 	}
 
 	// 3. Категория Б (Острое состояние, R-11)
-	if match := fg.categoryBRegex.FindString(norm); match != "" {
-		return SafetyResult{
-			Level:       models.FlagCategoryB,
-			MatchedText: match,
-			ActionCode:  ActionAcute,
-			RouteTarget: "M4-Н", // Кабинет неотложной помощи / регистратор
-			BotResponse: SpeechAcute,
+	for _, clause := range clauses {
+		for _, re := range fg.categoryBRegexes {
+			if match := matchAffirmative(re, clause); match != "" {
+				return SafetyResult{Level: models.FlagCategoryB, MatchedText: match,
+					ActionCode: ActionAcute, RouteTarget: "M4-Н", BotResponse: SpeechAcute}
+			}
 		}
 	}
 
 	// 4. Жалоба (R-03, С-15)
-	if match := fg.complaintRegex.FindString(norm); match != "" {
-		if fg.complaintNegationRegex == nil || !fg.complaintNegationRegex.MatchString(norm) {
-			return SafetyResult{
-				Level:       models.FlagComplaint,
-				MatchedText: match,
-				ActionCode:  ActionComplaint,
-				RouteTarget: "M3", // Старший администратор (доб. 5 / 105)
-				BotResponse: SpeechComplaint,
+	for _, clause := range clauses {
+		if match := fg.complaintRegex.FindString(clause); match != "" {
+			if fg.complaintNegationRegex == nil || !fg.complaintNegationRegex.MatchString(clause) {
+				return SafetyResult{
+					Level:       models.FlagComplaint,
+					MatchedText: match,
+					ActionCode:  ActionComplaint,
+					RouteTarget: "M3", // Старший администратор (доб. 5 / 105)
+					BotResponse: SpeechComplaint,
+				}
 			}
 		}
+
 	}
 
 	return SafetyResult{Level: models.FlagNone}

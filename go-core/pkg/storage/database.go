@@ -72,7 +72,7 @@ func Open(path string) (result *Store, resultErr error) {
 	}
 	basePragmas := "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
 	writeDSN := dsn + basePragmas + "&_txlock=immediate"
-	readDSN := dsn + basePragmas + "&_query_only=true"
+	readDSN := dsn + basePragmas + "&_pragma=query_only(1)"
 
 	writeDB, err := sql.Open("sqlite", writeDSN)
 	if err != nil {
@@ -134,10 +134,10 @@ CREATE TABLE IF NOT EXISTS escalations (
 	if version != 1 {
 		return fmt.Errorf("unsupported database schema %d", version)
 	}
-	if _, err = s.writeDB.Exec("UPDATE slot_claims SET status='uncertain' WHERE status='pending'"); err != nil {
+	if _, err = s.writeDB.Exec("UPDATE slot_claims SET status='uncertain',expires_at=0 WHERE status='pending'"); err != nil {
 		return err
 	}
-	if _, err = s.writeDB.Exec("DELETE FROM slot_claims WHERE status='held' AND (expires_at <= ? OR expires_at = 0)", time.Now().Unix()); err != nil {
+	if _, err = s.writeDB.Exec("DELETE FROM slot_claims WHERE status='held'"); err != nil {
 		return err
 	}
 	return nil

@@ -1,6 +1,9 @@
 import io
+import math
 import struct
+import sys
 import wave
+from array import array
 from collections import deque
 from collections.abc import Callable
 
@@ -76,9 +79,11 @@ class ResettingVAD:
 class EndpointDetector:
     """32 ms VAD frames, 192 ms pre-roll, 640 ms hangover and a 20 s ceiling."""
 
-    def __init__(self, is_speech: Callable[[bytes], bool], barge_threshold: int = 2):
+    def __init__(self, is_speech: Callable[[bytes], bool], barge_threshold: int = 5):
         self.is_speech = is_speech
-        self.barge_threshold = barge_threshold
+        # A playback interruption must also qualify for an ASR utterance. Short
+        # VAD noise must not silence the bot and then disappear at endpointing.
+        self.barge_threshold = max(5, barge_threshold)
         self.pending = bytearray()
         self.pre_roll: deque[bytes] = deque(maxlen=6)
         self.speech = bytearray()
@@ -116,3 +121,17 @@ class EndpointDetector:
                 self.speech.clear()
                 self.voice_frames = self.silence_frames = self.barge_frames = 0
         return complete, barge_in
+
+
+def pcm_metrics(pcm: bytes) -> dict[str, float]:
+    """Compute utterance diagnostics in a worker, outside the audio event loop."""
+    samples = array("h", pcm)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    count = max(1, len(samples))
+    rms = math.sqrt(sum(value * value for value in samples) / count)
+    return {
+        "rms_dbfs": round(20 * math.log10(max(1, rms) / 32768), 1),
+        "peak_percent": round(max((abs(s) for s in samples), default=0) / 32768 * 100, 1),
+        "clipped_percent": round(sum(abs(s) >= 31744 for s in samples) / count * 100, 2),
+    }

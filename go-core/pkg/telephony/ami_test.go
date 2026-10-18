@@ -79,3 +79,11 @@ func TestRejectsControlProtocolInjection(t *testing.T) {
 		t.Fatal("internal 103 accepted as emergency target")
 	}
 }
+
+func TestAMIFieldsRejectInjectionAtEncodingBoundary(t *testing.T) {
+	for _, fields := range []map[string]string{{"Channel": "PJSIP/200\r\nAction: Command"}, {"Action\r\nCommand": "x"}, {"ActionID": "injected"}} {
+		if _, err := amiFields(fields); err == nil {
+			t.Fatal("AMI encoder accepted injection")
+		}
+	}
+}

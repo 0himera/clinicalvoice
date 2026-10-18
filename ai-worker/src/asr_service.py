@@ -1,4 +1,4 @@
-"""Bounded local recognition. Model access is serialized independently of HTTP."""
+"""Bounded local recognition with two native CTranslate2 workers."""
 
 import io
 import os
@@ -16,6 +16,7 @@ class FasterWhisperASR:
             os.getenv("ASR_MODEL", model_size),
             device=device,
             compute_type="float16" if device == "cuda" else "int8",
+            num_workers=2,
             revision=os.getenv("ASR_MODEL_REVISION")
             or (
                 "536b0662742c02347bc0e980a01041f333bce120"
@@ -50,11 +51,8 @@ class FasterWhisperASR:
     def transcribe(self, pcm_16k_bytes: bytes) -> str:
         if not pcm_16k_bytes:
             return ""
-        try:
-            data = np.frombuffer(pcm_16k_bytes, dtype="<i2").astype(np.float32) / 32768
-            return self._transcribe(data)
-        except Exception:
-            return ""
+        data = np.frombuffer(pcm_16k_bytes, dtype="<i2").astype(np.float32) / 32768
+        return self._transcribe(data)
 
     def transcribe_wav(self, wav_bytes: bytes) -> str:
         if not wav_bytes:

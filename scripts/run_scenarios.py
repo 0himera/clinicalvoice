@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import subprocess
 import sys
 import time
@@ -29,6 +30,7 @@ def isolated_server(port: int = 18085):
     """Spins up an isolated Go server with a clean mock database."""
     db_path = ROOT / "var" / f"scenario-runner-{uuid.uuid4().hex[:8]}.db"
     env = os.environ.copy()
+    core_token = os.getenv("CORE_API_TOKEN") or secrets.token_hex(24)
     llm_allow_remote = os.getenv("LLM_ALLOW_REMOTE", "false").lower() in ("true", "1")
     default_base_url = "http://127.0.0.1:11434/v1"
     raw_base_url = os.getenv("LLM_BASE_URL", default_base_url)
@@ -40,6 +42,7 @@ def isolated_server(port: int = 18085):
             "PORT": str(port),
             "HTTP_PORT": str(port),
             "CORE_HOST": "127.0.0.1",
+            "CORE_API_TOKEN": core_token,
             "CORE_URL": f"http://127.0.0.1:{port}",
             "MIS_API_TOKEN": "",
             "DATABASE_PATH": str(db_path),
@@ -92,8 +95,17 @@ def isolated_server(port: int = 18085):
                                 f"Isolated server on port {port} failed to start: {err_content}"
                             ) from None
                         time.sleep(0.2)
-            os.environ["CORE_URL"] = f"http://127.0.0.1:{port}"
-            yield env
+            previous = {key: os.environ.get(key) for key in ("CORE_URL", "CORE_API_TOKEN")}
+            try:
+                os.environ["CORE_URL"] = f"http://127.0.0.1:{port}"
+                os.environ["CORE_API_TOKEN"] = core_token
+                yield env
+            finally:
+                for key, value in previous.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
         finally:
             proc.terminate()
             try:

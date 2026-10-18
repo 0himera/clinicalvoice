@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -83,7 +84,8 @@ func NewDecisionClient(endpoint, apiToken string, enabled bool) *DecisionClient 
 		apiToken: apiToken,
 		enabled:  enabled,
 		httpClient: &http.Client{
-			Timeout: timeout,
+			Timeout:       timeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 	}
 }
@@ -111,6 +113,9 @@ func (c *DecisionClient) IsLocal() bool {
 func (c *DecisionClient) Decide(ctx context.Context, state any, questions map[string]QuestionSpec) (*DecisionResponse, error) {
 	if !c.IsEnabled() {
 		return nil, fmt.Errorf("decision client is disabled")
+	}
+	if !c.IsLocal() {
+		return nil, fmt.Errorf("decision endpoint must be loopback")
 	}
 	reqBody := DecisionRequest{
 		State:     state,
@@ -140,62 +145,10 @@ func (c *DecisionClient) Decide(ctx context.Context, state any, questions map[st
 	}
 
 	var dResp DecisionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&dResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&dResp); err != nil {
 		return nil, err
 	}
 	return &dResp, nil
-}
-
-// DecideVitalThreat evaluates whether an utterance expresses a genuine medical emergency or a false alarm
-// (e.g. emotional metaphor "сердце кровью обливается" or negation "я не задыхаюсь").
-// In accordance with fail-closed safety, if the decision model is unavailable or errors, it returns isThreat=true.
-func (c *DecisionClient) DecideVitalThreat(ctx context.Context, utterance string) (isThreat bool, pTrue float64, err error) {
-	if !c.IsEnabled() {
-		// Fail-closed: assume threat if client disabled
-		return true, 1.0, nil
-	}
-	state := map[string]string{
-		"шаг_диалога":     "проверка_безопасности",
-		"реплика_пациента": utterance,
-	}
-	questions := map[string]QuestionSpec{
-		"vital_threat": {
-			Type:     TypeNoul,
-			Question: "Is the patient reporting an acute, real physical heart attack, severe vital choking or medical emergency right now, excluding negations and emotional metaphors?",
-		},
-	}
-	resp, err := c.Decide(ctx, state, questions)
-	if err != nil {
-		// Fail-closed: treat as real emergency if model fails or times out
-		return true, 1.0, err
-	}
-	ans, ok := resp.Answers["vital_threat"]
-	if !ok {
-		return true, 1.0, nil
-	}
-	pTrue = ans.Noul
-	prob := ans.Confidence
-	if ans.Probabilities != nil && ans.Choice != "" {
-		if p, ok := ans.Probabilities[ans.Choice]; ok {
-			prob = p
-		}
-	}
-	if ans.Noul == 0 {
-		if ans.Choice == "true" || ans.Choice == "TRUE" || ans.Choice == "THREAT" || ans.Choice == "EMERGENCY" {
-			pTrue = prob
-		} else if ans.Choice == "false" || ans.Choice == "FALSE" || ans.Choice == "NOT_THREAT" || ans.Choice == "METAPHOR" || ans.Choice == "NONE" {
-			pTrue = 1.0 - prob
-		} else if p, ok := ans.Probabilities["true"]; ok {
-			pTrue = p
-		} else if p, ok := ans.Probabilities["TRUE"]; ok {
-			pTrue = p
-		}
-	}
-	// Calibrated threshold: if P(true) < 0.15, it is a proven false alarm / metaphor
-	if pTrue < 0.15 {
-		return false, pTrue, nil
-	}
-	return true, pTrue, nil
 }
 
 // DecideConfirmationAndAside resolves composite utterances in confirmation states:
@@ -205,10 +158,10 @@ func (c *DecisionClient) DecideConfirmationAndAside(ctx context.Context, utteran
 		return "", "", 0, fmt.Errorf("decision client is disabled")
 	}
 	state := map[string]string{
-		"dialogue_step":       "confirm_booking",
-		"last_prompt":         lastPrompt,
-		"held_slot":           heldSlotDesc,
-		"patient_utterance":   utterance,
+		"dialogue_step":     "confirm_booking",
+		"last_prompt":       lastPrompt,
+		"held_slot":         heldSlotDesc,
+		"patient_utterance": utterance,
 	}
 	questions := map[string]QuestionSpec{
 		"confirmation": {
@@ -356,17 +309,21 @@ func (c *DecisionClient) DecideNLU(ctx context.Context, text, state string) (*Ex
 	questions := map[string]QuestionSpec{
 		"intent": {
 			Type:     TypeChoice,
-			Question: "What is the primary intent of the patient?",
+			Question: "Какова цель текущей реплики пациента?",
 			Criteria: map[string]string{
-				"BOOKING":        "Booking an appointment with a doctor",
-				"CANCEL":         "Cancelling an existing appointment",
-				"RESCHEDULE":     "Rescheduling an existing appointment to another date or time",
-				"CHECK_STATUS":   "Checking details or date of an existing appointment",
-				"HOME_VISIT":     "Calling a doctor for a home visit",
-				"DIRECTORY_INFO": "Asking about the directory of doctors and specialties",
-				"FAQ_INFO":       "General FAQ (address, tests, documents, fluorography, prices)",
-				"OPERATOR":       "Requesting to speak with a human operator or registrar",
-				"UNKNOWN":        "Unclear request or unrelated to medical clinic services",
+				"BOOKING":           "Пациент хочет оформить новую запись на прием к выбранному врачу.",
+				"CANCEL":            "Просит отменить существующую запись на прием.",
+				"RESCHEDULE":        "Просит перенести существующую запись на другое время или к другому врачу.",
+				"CHECK_STATUS":      "Просит сообщить сведения о своей существующей записи: когда, куда и к кому записан.",
+				"HOME_VISIT":        "Просит вызвать врача на дом.",
+				"DIRECTORY_INFO":    "Интересуется, какие специалисты и направления доступны в поликлинике; просит сориентировать по каталогу врачей.",
+				"FAQ_INFO":          "Справка об адресе, часах работы, документах, анализах или правилах поликлиники.",
+				"OPERATOR":          "Просит соединить с живым сотрудником или оператором.",
+				"CLARIFY":           "Просит объяснить цель или назначение запрошенных сведений, данных или подтверждения на текущем шаге.",
+				"REPEAT":            "Просит повторить предыдущую реплику или вопрос.",
+				"CHOOSE_SPECIALIST": "Просит выбрать подходящего врача или первичный прием, в том числе по жалобам.",
+				"MEDICAL_QUESTION":  "Просит медицинский совет, диагноз, лечение или интерпретацию симптомов.",
+				"UNKNOWN":           "Реплика не относится ни к одному из перечисленных намерений.",
 			},
 		},
 		"faq_topic": {
@@ -400,7 +357,11 @@ func (c *DecisionClient) DecideNLU(ctx context.Context, text, state string) (*Ex
 	}
 
 	if intentAns, ok := resp.Answers["intent"]; ok {
-		if intentAns.Confidence >= 0.50 && intentAns.Choice != "UNKNOWN" {
+		probability := intentAns.Confidence
+		if p, ok := intentAns.Probabilities[intentAns.Choice]; ok {
+			probability = p
+		}
+		if probability >= 0.50 && allowedIntent(intentAns.Choice) && intentAns.Choice != "UNKNOWN" {
 			nlu.Intent = intentAns.Choice
 			if intentAns.Choice == "OPERATOR" {
 				nlu.OperatorRequested = true

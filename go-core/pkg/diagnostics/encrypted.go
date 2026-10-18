@@ -60,6 +60,7 @@ func CreateKey(path string) error {
 	}
 	defer file.Close()
 	key := make([]byte, 32)
+	// Best-effort removal of the generated key slice after writing.
 	defer func() {
 		for i := range key {
 			key[i] = 0
@@ -91,6 +92,8 @@ func LoadCipher(keyPath string) (cipher.AEAD, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Best-effort removal of the input slice. The active cipher necessarily
+	// retains expanded AES keys; this is not a guarantee of memory erasure.
 	defer func() {
 		for i := range key {
 			key[i] = 0

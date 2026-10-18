@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -70,6 +71,7 @@ type RealMISClient struct {
 	doctors      []models.Doctor
 	doctorsUntil time.Time
 	events       *slog.Logger
+	foreground   atomic.Int64
 }
 
 func NewRealMISClient(baseURL, token string) *RealMISClient {
@@ -86,6 +88,41 @@ func NewRealMISClient(baseURL, token string) *RealMISClient {
 		events:     slog.Default(),
 		httpClient: &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		limiter:    limiter,
+	}
+}
+
+type backgroundKey struct{}
+
+// Background marks maintenance reads/writes as lower priority than live turns.
+// All callers still share the official 10 RPM quota.
+func Background(ctx context.Context) context.Context {
+	return context.WithValue(ctx, backgroundKey{}, true)
+}
+
+func (c *RealMISClient) waitQuota(ctx context.Context) error {
+	if c.limiter == nil {
+		return nil
+	}
+	if background, _ := ctx.Value(backgroundKey{}).(bool); !background {
+		c.foreground.Add(1)
+		defer c.foreground.Add(-1)
+		return c.limiter.Wait(ctx)
+	}
+	// Background work never reserves future tokens ahead of interactive calls.
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if c.foreground.Load() == 0 && c.limiter.Allow() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -119,24 +156,28 @@ func (c *RealMISClient) doRequest(ctx context.Context, method, path string, body
 		c.events.Info("mis_request", "call_id", diagnostics.CallID(ctx), "method", method, "resource", resource, "status", status,
 			"queue_ms", queued.Milliseconds(), "request_ms", (elapsed - queued).Milliseconds(), "latency_ms", elapsed.Milliseconds(), "error_kind", issue)
 	}()
-	if c.token != "" {
+	for {
+		if err := c.waitQuota(ctx); err != nil {
+			return fmt.Errorf("%w: %w", ErrNotSent, err)
+		}
+		// Recheck after waiting: other requests may have received HTTP 429.
 		c.mu.Lock()
 		wait := time.Until(c.blockedUntil)
 		c.mu.Unlock()
-		if wait > 0 {
-			t := time.NewTimer(wait)
-			defer t.Stop()
-			select {
-			case <-ctx.Done():
-				return fmt.Errorf("%w: %w", ErrNotSent, ctx.Err())
-			case <-t.C:
-			}
+		if wait <= 0 {
+			break
 		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("%w: %w", ErrNotSent, ctx.Err())
+		case <-timer.C:
+		}
+		// Acquire quota again so requests held by Retry-After cannot burst.
 	}
-	if c.limiter != nil {
-		if err := c.limiter.Wait(ctx); err != nil {
-			return fmt.Errorf("%w: %w", ErrNotSent, err)
-		}
+	if ctx.Err() != nil {
+		return fmt.Errorf("%w: %w", ErrNotSent, ctx.Err())
 	}
 	requestStarted = time.Now()
 	phase = "encode"
@@ -157,6 +198,12 @@ func (c *RealMISClient) doRequest(ctx context.Context, method, path string, body
 	phase = "transport"
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		// net/http's url.Error includes patient search parameters. Preserve the
+		// transport cause for errors.Is/As without retaining that URL in logs.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
 		return fmt.Errorf("MIS transport: %w", err)
 	}
 	defer resp.Body.Close()

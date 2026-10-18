@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -309,7 +308,11 @@ func (f *FSMController) confirmBooking(ctx context.Context, s *models.CallSessio
 		}
 	}
 	slot := *s.SelectedSlot
-	if err := f.slotMgr.MarkPending(ctx, slot, s.CallID); err != nil {
+	pendingVisitID := 0
+	if s.CurrentScenario == models.ScenarioReschedule {
+		pendingVisitID = s.VisitID
+	}
+	if err := f.slotMgr.MarkPendingVisit(ctx, slot, s.CallID, pendingVisitID); err != nil {
 		if errors.Is(err, slotmgr.ErrUnavailable) {
 			return f.offer(ctx, s)
 		}
@@ -323,24 +326,20 @@ func (f *FSMController) confirmBooking(ctx context.Context, s *models.CallSessio
 	} else {
 		visit, err = f.misClient.CreateVisit(ctx, models.VisitCreate{ClientID: s.Patient.ID, DoctorID: slot.DoctorID, ScheduledAt: at})
 	}
+	settleCtx, settleCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer settleCancel()
 	if err != nil {
-		if resolveErr := f.slotMgr.Resolve(context.WithoutCancel(ctx), slot, s.CallID, 0, misclient.Ambiguous(err)); resolveErr != nil {
+		if resolveErr := f.slotMgr.Resolve(settleCtx, slot, s.CallID, 0, misclient.Ambiguous(err)); resolveErr != nil {
 			return f.systemFailure(ctx, s)
 		}
 		return f.systemFailure(ctx, s)
 	}
-	if s.CurrentScenario == models.ScenarioReschedule {
-		if cancelErr := f.slotMgr.Cancel(context.WithoutCancel(ctx), s.VisitID); cancelErr != nil {
-			slog.Error("failed to cancel old slot on reschedule, deferred cleanup needed", "visit_id", s.VisitID, "error", cancelErr)
-		}
+	// Resolve atomically moves the claim for this visit ID. Never delete the
+	// old claim separately, or claim success when local settlement failed.
+	if err = f.slotMgr.Resolve(settleCtx, slot, s.CallID, visit.ID, false); err != nil {
+		return f.systemFailure(ctx, s)
 	}
-	if err = f.slotMgr.Resolve(context.WithoutCancel(ctx), slot, s.CallID, visit.ID, false); err != nil {
-		if s.CurrentScenario == models.ScenarioReschedule {
-			slog.Error("failed to resolve new slot on reschedule, continuing since MIS was updated", "visit_id", visit.ID, "error", err)
-		} else {
-			return f.systemFailure(ctx, s)
-		}
-	}
+
 	s.SelectedSlot = nil
 	s.SlotHeldKey = ""
 	s.FailCount = 0

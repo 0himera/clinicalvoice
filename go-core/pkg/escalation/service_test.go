@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/himera/tochka-voice/go-core/pkg/misclient"
 	"github.com/himera/tochka-voice/go-core/pkg/models"
@@ -92,5 +93,87 @@ func TestEscalationSanitizationExcludesANIAndTrigger(t *testing.T) {
 	}
 	if !strings.Contains(storedDesc, "R-01") || !strings.Contains(storedDesc, "звонок: 12345") {
 		t.Fatalf("action code or call id was lost: %s", storedDesc)
+	}
+}
+
+func TestExpiredSendingIsVisibleAndNeverReposted(t *testing.T) {
+	store, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	mis := &unknownWrite{MISClient: misclient.NewMockMISClient()}
+	service := New(store, mis)
+	ctx := context.Background()
+	if err := service.Enqueue(ctx, 1, "R-01"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB.Exec("UPDATE escalations SET status='SENDING',lease_until=0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err := store.DB.QueryRow("SELECT status FROM escalations").Scan(&status); err != nil || status != "UNCERTAIN" {
+		t.Fatalf("%s %v", status, err)
+	}
+	if mis.calls != 0 {
+		t.Fatal("expired SENDING was reposted")
+	}
+}
+
+func TestFailedFinalUpdateDoesNotRetrySuccessfulPost(t *testing.T) {
+	store, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	service := New(store, misclient.NewMockMISClient())
+	ctx := context.Background()
+	if err := service.Enqueue(ctx, 1, "R-01"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB.Exec(`CREATE TRIGGER fail_sent BEFORE UPDATE OF status ON escalations WHEN NEW.status='SENT' BEGIN SELECT RAISE(ABORT,'injected final update failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Drain(ctx); err == nil {
+		t.Fatal("expected injected local failure")
+	}
+	if _, err := store.DB.Exec("UPDATE escalations SET lease_until=0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err := store.DB.QueryRow("SELECT status FROM escalations").Scan(&status); err != nil || status != "UNCERTAIN" {
+		t.Fatalf("successful POST was queued again: %s %v", status, err)
+	}
+}
+
+type delayedWrite struct{ misclient.MISClient }
+
+func (m delayedWrite) CreateEscalation(ctx context.Context, req models.EscalationCreate) (*models.Escalation, error) {
+	time.Sleep(3100 * time.Millisecond)
+	return m.MISClient.CreateEscalation(ctx, req)
+}
+func TestSettlementDeadlineStartsAfterMISResponse(t *testing.T) {
+	store, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	service := New(store, delayedWrite{misclient.NewMockMISClient()})
+	ctx := context.Background()
+	if err := service.Enqueue(ctx, 1, "R-01"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err := store.DB.QueryRow("SELECT status FROM escalations").Scan(&status); err != nil || status != "SENT" {
+		t.Fatalf("settlement timed out before response: %s %v", status, err)
 	}
 }

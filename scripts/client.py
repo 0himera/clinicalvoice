@@ -51,6 +51,11 @@ class VoiceClient:
         response.raise_for_status()
         return response
 
+    def require_mock(self):
+        response = self.checked(self.core.get("/healthz")).json()
+        if response.get("mode") != "mock":
+            raise RuntimeError("This diagnostic requires a separate mock core and database")
+
     def start(self, caller_number: str = "", outbound_visit_id: int = 0) -> dict:
         payload = {}
         if caller_number:

@@ -1,5 +1,6 @@
 import asyncio
 import io
+import threading
 import time
 import uuid
 import wave
@@ -10,7 +11,7 @@ import pytest
 from src.audio import EndpointDetector, frame
 from src.services import Services
 from src.settings import Settings
-from src.telephony import Bridge, Call
+from src.telephony import Bridge, Call, agi_variable
 
 
 def wav_fixture(pcm: bytes = b"\x00\x00" * 800, rate: int = 8000) -> bytes:
@@ -68,7 +69,6 @@ async def test_tts_pool_concurrent_execution_without_locks():
         tts=m1,
         tts_instances=[m1, m2],
         vad=MockVAD(),
-        tts_capacity=asyncio.Semaphore(2),
     )
     # Synthesize two requests concurrently
     res1, res2 = await asyncio.gather(
@@ -86,67 +86,73 @@ async def test_tts_pool_concurrent_execution_without_locks():
 
 
 @pytest.mark.asyncio
-async def test_inference_cancellation_without_shield():
-    started = asyncio.Event()
+async def test_cancelled_asr_keeps_capacity_until_thread_finishes():
+    started, finish = threading.Event(), threading.Event()
 
     class HangingASR:
-        def transcribe_wav(self, audio: bytes) -> str:
+        def transcribe_wav(self, audio):
             started.set()
-            time.sleep(0.5)
+            assert finish.wait(2)
             return "Готово"
 
-    services = Services(asr=HangingASR(), tts=SlowTTS(), vad=MockVAD())
+    services = Services(
+        asr=HangingASR(), tts=SlowTTS(), vad=MockVAD(), asr_capacity=asyncio.Semaphore(1)
+    )
     task = asyncio.create_task(services.transcribe(b"dummy"))
-    await started.wait()
+    assert await asyncio.to_thread(started.wait, 1)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    # Ensure task is not shielded and removed from work
-    assert len(services._work) == 0
+    try:
+        assert len(services._work) == 1
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(services.transcribe(b"next"), 0.02)
+    finally:
+        finish.set()
+        await services.close()
+    assert not services._work
+    assert await services.transcribe(b"next") == "Готово"
+    await services.close()
 
 
 @pytest.mark.asyncio
-async def test_fastagi_command_crlf_rejection_and_quoting():
-    class MockStream:
-        def __init__(self):
-            self.written = bytearray()
-            self.lines = [b"200 result=0\n", b"200 result=0\n"]
+async def test_cancelled_tts_does_not_return_running_model_to_pool():
+    started, finish = threading.Event(), threading.Event()
 
-        def write(self, data):
-            self.written.extend(data)
+    class HangingTTS(SlowTTS):
+        def synthesize(self, *args):
+            started.set()
+            assert finish.wait(2)
+            return super().synthesize(*args)
 
-        async def drain(self):
-            pass
+    model = HangingTTS()
+    services = Services(asr=SlowASR(), tts=model, vad=MockVAD())
+    task = asyncio.create_task(services.synthesize("один"))
+    assert await asyncio.to_thread(started.wait, 1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    try:
+        assert services._get_tts_pool().empty()
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(services.synthesize("два"), 0.02)
+    finally:
+        finish.set()
+        await services.close()
+    assert services._get_tts_pool().qsize() == 1
+    await services.synthesize("три")
+    assert model.max_active == 1
+    await services.close()
 
-        async def readline(self):
-            if self.lines:
-                return self.lines.pop(0)
-            return b""
 
-    stream = MockStream()
-
-    # Test the command logic directly as defined in telephony.py
-    async def command(name: str, value: str):
-        if "\r" in name or "\n" in name or "\r" in value or "\n" in value:
-            raise ValueError("CRLF characters not permitted in AGI command")
-        escaped_value = value.replace("\\", "\\\\").replace('"', '\\"')
-        stream.write(f'SET VARIABLE {name} "{escaped_value}"\n'.encode("ascii"))
-        await stream.drain()
-        answer = await stream.readline()
-        if not answer.startswith(b"200 result="):
-            raise ConnectionError("AGI command failed")
-
-    # Reject newline in name
-    with pytest.raises(ValueError, match="CRLF characters not permitted"):
-        await command("VAR\r\nNAME", "val")
-
-    # Reject newline in value
-    with pytest.raises(ValueError, match="CRLF characters not permitted"):
-        await command("VAR_NAME", "val\nINJECTION")
-
-    # Properly escape quotes
-    await command("VAR_NAME", 'Doctor "Smith" & "Jones"')
-    assert b'SET VARIABLE VAR_NAME "Doctor \\"Smith\\" & \\"Jones\\""\n' in stream.written
+def test_fastagi_command_validates_real_encoder():
+    for name, value in [("VAR\r\nNAME", "value"), ("VAR", "value\nINJECTION"), ('VAR"', "value")]:
+        with pytest.raises(ValueError):
+            agi_variable(name, value)
+    assert (
+        agi_variable("VAR_NAME", 'Doctor "Smith"')
+        == b'SET VARIABLE VAR_NAME "Doctor \\"Smith\\""\n'
+    )
 
 
 @pytest.mark.asyncio
@@ -190,8 +196,8 @@ async def test_barge_in_and_safe_utterance_queue(services, tmp_path):
 
         # Barge-in: send 2 voice frames (triggering barge-in)
         voice_chunk = b"\x01\x00" * 256
-        writer.write(frame(0x10, voice_chunk))
-        writer.write(frame(0x10, voice_chunk))
+        for _ in range(5):
+            writer.write(frame(0x10, voice_chunk))
         await writer.drain()
 
         # Followed by quiet to complete utterance
@@ -223,41 +229,13 @@ def import_json(raw_line):
     return json.loads(raw_line)
 
 
-@pytest.mark.asyncio
-async def test_utterance_queue_overflow_safe_eviction():
-    utterances = asyncio.Queue(maxsize=2)
-    t1 = asyncio.create_task(asyncio.sleep(10))
-    t2 = asyncio.create_task(asyncio.sleep(10))
-    t3 = asyncio.create_task(asyncio.sleep(10))
-    utterances.put_nowait(t1)
-    utterances.put_nowait(t2)
-    assert utterances.full()
-
-    if utterances.full():
-        try:
-            oldest = utterances.get_nowait()
-            if oldest and not oldest.done():
-                oldest.cancel()
-        except (asyncio.QueueEmpty, ValueError):
-            pass
-    utterances.put_nowait(t3)
-    assert t1.cancelling() or t1.cancelled()
-    assert utterances.qsize() == 2
-    items = [utterances.get_nowait(), utterances.get_nowait()]
-    assert items == [t2, t3]
-    t2.cancel()
-    t3.cancel()
-
-
-def test_barge_in_triggers_at_two_voice_frames():
+def test_barge_in_requires_an_accepted_utterance():
     detector = EndpointDetector(lambda pcm: True, barge_threshold=2)
     voice = b"\x01\x00" * 256
-    # Frame 1: voiced
-    _, interrupted = detector.feed(voice)
-    assert not interrupted
-    # Frame 2: voiced -> barge-in!
+    for _ in range(4):
+        _, interrupted = detector.feed(voice)
+        assert not interrupted
     _, interrupted = detector.feed(voice)
     assert interrupted
-    # Frame 3: voiced -> no repeated barge-in
     _, interrupted = detector.feed(voice)
     assert not interrupted

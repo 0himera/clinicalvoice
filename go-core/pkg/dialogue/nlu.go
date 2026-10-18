@@ -89,102 +89,40 @@ func (f *FSMController) understand(ctx context.Context, text, state string) *llm
 		return nlu
 	}
 
-	// 3. Speculative Parallel Execution: Both System-1 Decision Model and System-2 LLM are enabled.
-	// Evaluate both concurrently to eliminate sequential fallback latency (max(t_dec, t_llm) instead of t_dec + t_llm).
-	type decResult struct {
-		nlu *llmclient.ExtractedNLU
-		err error
+	// Race usable results, not merely HTTP completion. An early provider error
+	// (including a privacy rejection) or UNKNOWN must not cancel the local model.
+	type result struct {
+		nlu      *llmclient.ExtractedNLU
+		err      error
+		decision bool
 	}
-	type llmResult struct {
-		nlu *llmclient.ExtractedNLU
-		err error
-	}
-
-	decCtx, decCancel := context.WithCancel(ctx)
-	defer decCancel()
-	llmCtx, llmCancel := context.WithCancel(ctx)
-	defer llmCancel()
-
-	chDec := make(chan decResult, 1)
-	chLLM := make(chan llmResult, 1)
-
-	go func() {
-		nlu, err := f.decisionClient.DecideNLU(decCtx, text, state)
-		chDec <- decResult{nlu: nlu, err: err}
-	}()
-
-	go func() {
-		nlu, err := f.llmClient.ExtractSlots(llmCtx, text, state)
-		chLLM <- llmResult{nlu: nlu, err: err}
-	}()
-
-	var decRes *decResult
-	var llmRes *llmResult
-
-	select {
-	case d := <-chDec:
-		decRes = &d
-		if d.err == nil && isDecisionConfident(d.nlu) {
-			llmCancel()
-			turn.latency = time.Since(started).Milliseconds()
-			turn.result, turn.intent = d.nlu, d.nlu.Intent
-			turn.used = true
-			return d.nlu
-		}
-		// Decision Model finished first but is not confident or failed. Await LLM.
+	work, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan result, 2)
+	go func() { nlu, err := f.decisionClient.DecideNLU(work, text, state); results <- result{nlu, err, true} }()
+	go func() { nlu, err := f.llmClient.ExtractSlots(work, text, state); results <- result{nlu, err, false} }()
+	defer func() { turn.latency = time.Since(started).Milliseconds() }()
+	for remaining := 2; remaining > 0; remaining-- {
 		select {
-		case l := <-chLLM:
-			llmRes = &l
+		case res := <-results:
+			if res.err != nil {
+				turn.failure = "provider_error"
+				continue
+			}
+			confident := isLLMConfident(res.nlu)
+			if res.decision {
+				confident = isDecisionConfident(res.nlu)
+			}
+			if confident {
+				turn.result, turn.intent, turn.used = res.nlu, res.nlu.Intent, true
+				turn.failure = ""
+				return res.nlu
+			}
 		case <-ctx.Done():
+			turn.failure = "timeout"
 			return nil
 		}
-
-	case l := <-chLLM:
-		llmRes = &l
-		// LLM finished first. Check if Decision Model is already finished with a confident System-1 answer.
-		select {
-		case d := <-chDec:
-			decRes = &d
-			if d.err == nil && isDecisionConfident(d.nlu) {
-				turn.latency = time.Since(started).Milliseconds()
-				turn.result, turn.intent = d.nlu, d.nlu.Intent
-				turn.used = true
-				return d.nlu
-			}
-		default:
-			decCancel()
-		}
-
-	case <-ctx.Done():
-		return nil
 	}
-
-	turn.latency = time.Since(started).Milliseconds()
-	if llmRes != nil {
-		if llmRes.err != nil {
-			turn.failure = "provider_error"
-			if ctx.Err() != nil || strings.Contains(llmRes.err.Error(), "deadline") || strings.Contains(llmRes.err.Error(), "Timeout") {
-				turn.failure = "timeout"
-			}
-			if decRes != nil && decRes.nlu != nil {
-				turn.result, turn.intent = decRes.nlu, decRes.nlu.Intent
-				turn.used = decRes.nlu.Intent != "UNKNOWN"
-				return decRes.nlu
-			}
-			return nil
-		}
-		nlu := llmRes.nlu
-		turn.result, turn.intent = nlu, nlu.Intent
-		turn.used = isLLMConfident(nlu)
-		return nlu
-	}
-
-	if decRes != nil && decRes.nlu != nil {
-		turn.result, turn.intent = decRes.nlu, decRes.nlu.Intent
-		turn.used = decRes.nlu.Intent != "UNKNOWN"
-		return decRes.nlu
-	}
-
 	return nil
 }
 

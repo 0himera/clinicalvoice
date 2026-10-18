@@ -13,21 +13,21 @@ import (
 )
 
 type Config struct {
-	Address         string
-	APIToken        string
-	Database        string
-	Schedule        string
-	MISToken        string
-	MISURL          string
-	AMIAddress      string
-	AMIUser         string
-	AMISecret       string
-	DemoCalls       bool
-	DebugDialogue   bool
-	DebugLogDir     string
-	TechnicalLogDir string
-	Transcripts     bool
-	TranscriptDir   string
+	Address              string
+	APIToken             string
+	Database             string
+	Schedule             string
+	MISToken             string
+	MISURL               string
+	AMIAddress           string
+	AMIUser              string
+	AMISecret            string
+	DemoCalls            bool
+	DebugDialogue        bool
+	DebugLogDir          string
+	TechnicalLogDir      string
+	Transcripts          bool
+	TranscriptDir        string
 	TranscriptKey        string
 	TranscriptHours      int
 	AIAPIToken           string
@@ -141,6 +141,9 @@ func Load() (Config, error) {
 		}
 		if len(paths) == 0 {
 			return c, fmt.Errorf("set SCHEDULE_PATH to the organizer's workbook (checked data/*.xlsx, ../data/*.xlsx)")
+		}
+		if len(paths) != 1 {
+			return c, errors.New("multiple workbooks found; set SCHEDULE_PATH explicitly")
 		}
 		c.Schedule = paths[0]
 	}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,7 +26,7 @@ func (a AMI) Originate(ctx context.Context, endpoint string, visitID int) error 
 	if !ValidEndpoint(endpoint) || visitID <= 0 {
 		return errors.New("invalid originate parameters")
 	}
-	return a.request(ctx, fmt.Sprintf("Action: Originate\r\nChannel: %s\r\nContext: voice-outbound\r\nExten: s\r\nPriority: 1\r\nTimeout: 30000\r\nAsync: true\r\nVariable: VISIT_ID=%d\r\nCallerID: Polyclinic 7 <7000707>", endpoint, visitID))
+	return a.request(ctx, map[string]string{"Action": "Originate", "Channel": endpoint, "Context": "voice-outbound", "Exten": "s", "Priority": "1", "Timeout": "30000", "Async": "true", "Variable": fmt.Sprintf("VISIT_ID=%d", visitID), "CallerID": "Polyclinic 7 <7000707>"})
 }
 
 func (a AMI) Redirect(ctx context.Context, channel, target string) error {
@@ -37,10 +38,13 @@ func (a AMI) Redirect(ctx context.Context, channel, target string) error {
 	default:
 		return errors.New("invalid transfer target")
 	}
-	return a.request(ctx, fmt.Sprintf("Action: Redirect\r\nChannel: %s\r\nContext: from-internal\r\nExten: %s\r\nPriority: 1", channel, target))
+	return a.request(ctx, map[string]string{"Action": "Redirect", "Channel": channel, "Context": "from-internal", "Exten": target, "Priority": "1"})
 }
 
-func (a AMI) request(ctx context.Context, fields string) error {
+func (a AMI) request(ctx context.Context, fields map[string]string) error {
+	if _, err := amiFields(fields); err != nil {
+		return err
+	}
 	if a.Secret == "" || strings.ContainsAny(a.Username+a.Secret, "\r\n") {
 		return errors.New("AMI credentials are not configured")
 	}
@@ -62,9 +66,13 @@ func (a AMI) request(ctx context.Context, fields string) error {
 	if _, err = r.ReadString('\n'); err != nil {
 		return err
 	}
-	action := func(fields string) error {
+	action := func(fields map[string]string) error {
+		packet, err := amiFields(fields)
+		if err != nil {
+			return err
+		}
 		id := uuid.NewString()
-		if _, err := fmt.Fprintf(conn, "ActionID: %s\r\n%s\r\n\r\n", id, fields); err != nil {
+		if _, err := fmt.Fprintf(conn, "ActionID: %s\r\n%s\r\n\r\n", id, packet); err != nil {
 			return err
 		}
 		for n := 0; n < 100; n++ {
@@ -98,8 +106,24 @@ func (a AMI) request(ctx context.Context, fields string) error {
 		}
 		return errors.New("AMI response limit exceeded")
 	}
-	if err = action("Action: Login\r\nUsername: " + a.Username + "\r\nSecret: " + a.Secret + "\r\nEvents: off"); err != nil {
+	if err = action(map[string]string{"Action": "Login", "Username": a.Username, "Secret": a.Secret, "Events": "off"}); err != nil {
 		return err
 	}
 	return action(fields)
+}
+
+func amiFields(fields map[string]string) (string, error) {
+	keys := make([]string, 0, len(fields))
+	for key, value := range fields {
+		if !regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`).MatchString(key) || strings.EqualFold(key, "ActionID") || strings.ContainsAny(value, "\r\n") {
+			return "", errors.New("invalid AMI field")
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	lines := make([]string, 0, len(keys))
+	for _, key := range keys {
+		lines = append(lines, key+": "+fields[key])
+	}
+	return strings.Join(lines, "\r\n"), nil
 }

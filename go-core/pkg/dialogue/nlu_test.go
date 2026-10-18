@@ -1,6 +1,7 @@
 package dialogue
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -155,3 +156,24 @@ func TestRemoteLLMForbiddenInPIIStates(t *testing.T) {
 	}
 }
 
+func TestParallelNLUWaitsForUsableResult(t *testing.T) {
+	for _, status := range []int{200, 500} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			r := newRig(t)
+			withNLU(t, r, llmclient.ExtractedNLU{Intent: "UNKNOWN"}, status)
+			sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				time.Sleep(20 * time.Millisecond)
+				_ = json.NewEncoder(w).Encode(llmclient.DecisionResponse{Answers: map[string]llmclient.DecisionAnswer{"intent": {Type: llmclient.TypeChoice, Choice: "DIRECTORY_INFO", Confidence: 0.9}}})
+			}))
+			defer sidecar.Close()
+			r.fsm.SetDecisionClient(llmclient.NewDecisionClient(sidecar.URL, "fixture", true))
+			got := r.fsm.understand(context.Background(), "Сориентируйте по направлениям", StateMenu)
+			if got == nil || got.Intent != "DIRECTORY_INFO" {
+				t.Fatalf("early unusable LLM response cancelled local NLU: %+v", got)
+			}
+			if len(r.visits(t)) != 0 {
+				t.Fatal("NLU changed MIS")
+			}
+		})
+	}
+}

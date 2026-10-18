@@ -122,6 +122,47 @@ func rows(z *zip.ReadCloser, file string, shared []string, visit func([]string) 
 	}
 }
 
+// table maps named columns to a stable internal order and rejects unknown
+// schemas. Moving columns cannot silently change doctor IDs or room numbers.
+func table(columns [][]string, visit func([]string) error) func([]string) error {
+	var positions []int
+	return func(row []string) error {
+		if positions == nil {
+			positions = make([]int, len(columns))
+			for i, aliases := range columns {
+				positions[i] = -1
+				if len(aliases) == 0 {
+					continue
+				}
+				for j, name := range row {
+					for _, alias := range aliases {
+						if NameKey(name) == NameKey(alias) {
+							if positions[i] != -1 {
+								return fmt.Errorf("duplicate column %s", alias)
+							}
+							positions[i] = j
+						}
+					}
+				}
+				if positions[i] == -1 {
+					return fmt.Errorf("missing column %s", aliases[0])
+				}
+			}
+			return nil
+		}
+		ordered := make([]string, len(columns))
+		for i, j := range positions {
+			if j >= 0 && j < len(row) {
+				ordered[i] = row[j]
+			}
+		}
+		if ordered[0] == "" {
+			return errors.New("missing row ID")
+		}
+		return visit(ordered)
+	}
+}
+
 func LoadXLSX(filename string) (Snapshot, error) {
 	z, err := zip.OpenReader(filename)
 	if err != nil {
@@ -216,7 +257,9 @@ func LoadXLSX(filename string) (Snapshot, error) {
 	out := Snapshot{Holidays: map[string]bool{}}
 	doctors := map[string]models.Doctor{}
 	names := map[string]bool{}
-	err = rows(z, sheets["Врачи"], shared, func(r []string) error {
+	err = rows(z, sheets["Врачи"], shared, table([][]string{
+		{"ID"}, {"ФИО"}, nil, {"Специальность", "Специальность (профиль)"}, {"Аудитория", "Пациенты"}, {"Кабинет"}, nil,
+	}, func(r []string) error {
 		for len(r) < 7 {
 			r = append(r, "")
 		}
@@ -242,12 +285,14 @@ func LoadXLSX(filename string) (Snapshot, error) {
 		doctors[r[0]] = d
 		out.Doctors = append(out.Doctors, d)
 		return nil
-	})
+	}))
 	if err != nil {
 		return Snapshot{}, err
 	}
 	seen := map[string]bool{}
-	err = rows(z, sheets["Слоты"], shared, func(r []string) error {
+	err = rows(z, sheets["Слоты"], shared, table([][]string{
+		{"ID слота"}, {"Дата"}, nil, {"Врач_ID", "ID врача"}, {"ФИО", "ФИО врача"}, {"Специальность"}, nil, {"Кабинет"}, {"Начало"}, {"Конец", "Окончание"}, {"Длительность", "Мин"}, {"Статус"},
+	}, func(r []string) error {
 		for len(r) < 12 {
 			r = append(r, "")
 		}
@@ -290,7 +335,7 @@ func LoadXLSX(filename string) (Snapshot, error) {
 		}
 		out.Entries = append(out.Entries, Entry{Slot: models.Slot{DoctorID: d.ID, Doctor: d.FullName, Specialty: d.Specialty, Room: r[7], StartTime: start, Duration: duration}, Free: r[11] == "Свободен"})
 		return nil
-	})
+	}))
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -351,20 +396,26 @@ func (s *Snapshot) MatchDoctors(actual []models.Doctor) error {
 		byName[key] = d
 	}
 	mapping := map[int]models.Doctor{}
+	matched := make([]models.Doctor, len(s.Doctors))
 	for i, old := range s.Doctors {
 		d, ok := byName[NameKey(old.FullName)]
-		if !ok || models.SpecialtyKey(d.Specialty) != models.SpecialtyKey(old.Specialty) {
+		if !ok || d.ID <= 0 || models.SpecialtyKey(d.Specialty) != models.SpecialtyKey(old.Specialty) {
 			return fmt.Errorf("doctor not matched to MIS: %s (%s)", old.FullName, old.Specialty)
 		}
 		d.Room = old.Room
 		d.Audience = old.Audience
-		s.Doctors[i] = d
+		matched[i] = d
 		mapping[old.ID] = d
 	}
-	for i := range s.Entries {
-		d := mapping[s.Entries[i].Slot.DoctorID]
-		s.Entries[i].Slot.DoctorID = d.ID
+	entries := append([]Entry(nil), s.Entries...)
+	for i := range entries {
+		d, ok := mapping[entries[i].Slot.DoctorID]
+		if !ok {
+			return errors.New("slot references unknown workbook doctor")
+		}
+		entries[i].Slot.DoctorID = d.ID
 	}
+	s.Doctors, s.Entries = matched, entries
 	return nil
 }
 

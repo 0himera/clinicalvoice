@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/himera/tochka-voice/go-core/pkg/llmclient"
@@ -195,5 +196,33 @@ func TestDecisionModel_FalseAlarmSafetyFilter(t *testing.T) {
 	res := r.turn("У меня сердце кровью обливается, запишите к терапевту")
 	if res.NextState == StateTransfer && res.TransferTarget == "104" {
 		t.Fatalf("metaphor incorrectly transferred to emergency: %+v", res)
+	}
+}
+
+func TestIdentityCanClarifyWithDecisionAndNoLLM(t *testing.T) {
+	r := newRig(t)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests.Add(1)
+		var body llmclient.DecisionRequest
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if _, ok := body.Questions["intent"].Criteria["CLARIFY"]; !ok {
+			t.Error("missing clarification intent")
+		}
+		_ = json.NewEncoder(w).Encode(llmclient.DecisionResponse{Answers: map[string]llmclient.DecisionAnswer{
+			"intent": {Type: llmclient.TypeChoice, Choice: "CLARIFY", Confidence: 0.1, Probabilities: map[string]float64{"CLARIFY": 0.96}},
+		}})
+	}))
+	defer server.Close()
+	r.fsm.SetDecisionClient(llmclient.NewDecisionClient(server.URL, "fixture", true))
+	r.turn("Запишите к терапевту")
+	got := r.turn("Объясните назначение запрошенных сведений")
+	if got.NextState != StateIdentity || !strings.Contains(got.BotSpeech, "не перепутать пациентов") || !got.LLMUsed || requests.Load() != 1 {
+		t.Fatalf("local clarification lost: %+v calls=%d", got, requests.Load())
+	}
+	if r.call.LastName != "" || r.call.FirstName != "" || len(r.visits(t)) != 0 {
+		t.Fatal("clarification became patient data or changed MIS")
 	}
 }
