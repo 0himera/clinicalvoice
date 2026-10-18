@@ -59,13 +59,18 @@ func (f *FSMController) offer(ctx context.Context, s *models.CallSession) StepRe
 	}
 	s.Options = options
 	s.FailCount = 0
-	speech := fmt.Sprintf("Первый вариант: %s, %s", options[0].Doctor, FormatDateRussian(options[0].StartTime))
+	speech := fmt.Sprintf("Первый вариант: %s, %s", options[0].Doctor, shortSlotDate(options[0].StartTime))
 	if len(options) > 1 {
-		speech += fmt.Sprintf(". Второй: %s, %s. Какой удобнее?", options[1].Doctor, FormatDateRussian(options[1].StartTime))
+		speech += fmt.Sprintf(". Второй: %s, %s. Выберите.", options[1].Doctor, shortSlotDate(options[1].StartTime))
 	} else {
 		speech += ". Выбрать это время?"
 	}
 	return say(StateChooseSlot, speech)
+}
+
+func shortSlotDate(at time.Time) string {
+	_, date, _ := strings.Cut(FormatDateRussian(at), ", ")
+	return strings.Replace(date, " в ", " ", 1)
 }
 func optionIndex(text string, n int) int {
 	s := normalized(text)
@@ -286,6 +291,9 @@ func (f *FSMController) confirmBooking(ctx context.Context, s *models.CallSessio
 	}
 	if s.SelectedSlot == nil || s.Patient == nil {
 		return f.systemFailure(ctx, s)
+	}
+	if s.CurrentScenario == models.ScenarioReschedule && !recordsAuthorized(s) {
+		return f.transfer(ctx, s, "101", "R-07: полномочия для переноса не проверены", "Для переноса нужна проверка полномочий. Соединяю с регистратором.")
 	}
 	unlock, lockErr := f.patientLocks.acquire(ctx, s.Patient.ID)
 	if lockErr != nil {

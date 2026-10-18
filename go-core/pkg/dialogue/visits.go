@@ -10,6 +10,9 @@ import (
 )
 
 func (f *FSMController) existing(ctx context.Context, s *models.CallSession) StepResult {
+	if !recordsAuthorized(s) {
+		return f.transfer(ctx, s, "101", "R-07: полномочия для доступа к записям не проверены", "Сведения о записях доступны после проверки полномочий. Соединяю с регистратором.")
+	}
 	visits, err := f.misClient.ListVisits(ctx, s.Patient.ID, models.VisitPlanned)
 	if err != nil {
 		return f.systemFailure(ctx, s)
@@ -48,6 +51,9 @@ func (f *FSMController) chooseVisit(ctx context.Context, s *models.CallSession, 
 	return f.selectedVisit(ctx, s, s.ActiveVisits[i])
 }
 func (f *FSMController) selectedVisit(ctx context.Context, s *models.CallSession, v models.Visit) StepResult {
+	if !recordsAuthorized(s) || v.ClientID != s.Patient.ID {
+		return f.transfer(ctx, s, "101", "R-07: запись другого пациента", "Для доступа к записи нужна проверка полномочий. Соединяю с регистратором.")
+	}
 	s.VisitID = v.ID
 	switch s.CurrentScenario {
 	case models.ScenarioCancel:
@@ -66,6 +72,9 @@ func (f *FSMController) selectedVisit(ctx context.Context, s *models.CallSession
 	}
 }
 func (f *FSMController) confirmCancel(ctx context.Context, s *models.CallSession, text string) StepResult {
+	if !recordsAuthorized(s) {
+		return f.transfer(ctx, s, "101", "R-07: полномочия для отмены не проверены", "Для отмены нужна проверка полномочий. Соединяю с регистратором.")
+	}
 	if ParseIntent(text) == IntentReschedule {
 		s.CurrentScenario = models.ScenarioReschedule
 		if len(s.ActiveVisits) > 0 {

@@ -234,6 +234,13 @@ func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession,
 		}
 		return StepResult{NextState: StateDone, BotSpeech: "Всего доброго, будьте здоровы!", ShouldHangup: true, Outcome: "COMPLETED"}
 	}
+	if thirdPartyRecordRequest(text) && (recordRequest(ParseIntent(text)) || containsAny(norm, "когда записан", "во сколько записан")) {
+		s.ThirdParty = true
+		return f.transfer(ctx, s, "101", "R-07: сведения о другом пациенте, полномочия не проверены", "Сведения о чужих записях сообщает сотрудник после проверки полномочий. Соединяю с регистратором.")
+	}
+	if personalLabStatus(norm) {
+		return f.transfer(ctx, s, "101", "R-08: индивидуальная готовность анализов недоступна в МИС", "Личный статус анализов мне недоступен. Соединяю с регистратором для проверки готовности.")
+	}
 	if result, handled := f.conversation(ctx, s, text); handled {
 		return result
 	}
@@ -250,7 +257,7 @@ func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession,
 		resetIdentity(s)
 		s.ThirdParty = newSubject
 	}
-	if familyRequest(text) || containsAny(norm, "мою жену", "моего мужа", "моя жена", "мой муж", "моя мама", "мама записана", "на когда записана", "на когда записан", "за другого", "свою дочь", "своего сына") {
+	if familyRequest(text) || containsAny(norm, "мою жену", "моего мужа", "моя жена", "мой муж", "моя мама", "мама записана", "за другого", "свою дочь", "своего сына") {
 		s.ThirdParty = true
 	}
 	if s.ThirdParty && !s.Guardian && (s.CurrentScenario == models.ScenarioCheckStatus || s.CurrentScenario == models.ScenarioCancel || s.CurrentScenario == models.ScenarioReschedule || ParseIntent(text) == IntentCheckStatus || ParseIntent(text) == IntentCancel || ParseIntent(text) == IntentReschedule) {
@@ -366,6 +373,9 @@ func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession,
 		s.FailCount = 0
 		return say(StateFinal, "Предпочтение сохранено. Могу ещё помочь?")
 	case StateReminderIdentity:
+		if answeringMachine(norm) {
+			return StepResult{NextState: StateDone, BotSpeech: "Попросите пациента перезвонить в регистратуру поликлиники номер семь. Всего доброго!", ShouldHangup: true, Outcome: "WRONG_PERSON"}
+		}
 		if Confirmation(text) == IntentDeny || containsAny(norm, "другой человек", "ошиблись", "не я") {
 			return StepResult{NextState: StateDone, BotSpeech: "Попросите пациента связаться с регистратурой поликлиники номер семь. Всего доброго!", ShouldHangup: true, Outcome: "WRONG_PERSON"}
 		}
@@ -382,6 +392,10 @@ func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession,
 	default:
 		return f.systemFailure(ctx, s)
 	}
+}
+
+func answeringMachine(text string) bool {
+	return containsAny(text, "оставьте сообщение", "оставить сообщение", "после сигнала", "после звукового сигнала", "голосовая почта", "это автоответчик", "абонент недоступен", "абонент временно недоступен")
 }
 
 func (f *FSMController) retry(ctx context.Context, s *models.CallSession, prompt string) StepResult {

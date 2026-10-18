@@ -2,6 +2,7 @@ package dialogue
 
 import (
 	"context"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -9,8 +10,45 @@ import (
 	"github.com/himera/tochka-voice/go-core/pkg/models"
 )
 
+var visitSubjectRE = regexp.MustCompile(`(?:^|\s)записан(?:а|ы)?\s+(\p{L}+(?:-\p{L}+)*)`)
+var namedVisitQueryRE = regexp.MustCompile(`^\s*(\p{L}+(?:-\p{L}+)*)(?:\s+\p{L}+(?:-\p{L}+)*){0,2}\s+(?:когда|во\s+сколько)\s+записан(?:а|ы)?(?:\s|[?.!]|$)`)
+var possessiveVisitRE = regexp.MustCompile(`(?:^|\s)(?:его|ее)\s+(?:запис|визит|прием)\p{L}*`)
+
+// An explicitly named third-person subject is not a self-identification.
+// This inspects sentence structure, never a list of surname suffixes.
+func thirdPartyRecordRequest(text string) bool {
+	s := normalized(text)
+	if familyRequest(s) || hasWord(s, "он", "она", "чужую", "чужой") || possessiveVisitRE.MatchString(s) {
+		return true
+	}
+	if match := namedVisitQueryRE.FindStringSubmatch(s); len(match) > 1 && !hasWord(match[1], "я", "мы", "а", "и") {
+		return true
+	}
+	for _, match := range visitSubjectRE.FindAllStringSubmatch(s, -1) {
+		if !hasWord(match[1], "я", "мы", "к", "ко", "на", "в", "у", "ли", "уже") {
+			return true
+		}
+	}
+	return false
+}
+
+func recordRequest(intent Intent) bool {
+	return intent == IntentCheckStatus || intent == IntentCancel || intent == IntentReschedule
+}
+
+func recordsAuthorized(s *models.CallSession) bool {
+	if !s.Identified || s.Patient == nil {
+		return false
+	}
+	if !s.ThirdParty {
+		return true
+	}
+	age, err := models.AgeOn(s.Patient.BirthDate, time.Now())
+	return err == nil && age < 18 && s.Guardian
+}
+
 func familyRequest(text string) bool {
-	for _, relation := range []string{"ребенка", "ребенку", "дочь", "дочку", "дочери", "сына", "сыну", "маму", "папу", "мужа", "жену", "сестру", "брата", "бабушку", "дедушку", "другого"} {
+	for _, relation := range []string{"ребенка", "ребенку", "дочь", "дочку", "дочери", "сына", "сыну", "маму", "мамы", "папу", "папы", "матери", "отца", "муж", "мужа", "жена", "жену", "жены", "сестру", "сестры", "брата", "бабушку", "бабушки", "дедушку", "дедушки", "другого"} {
 		if word(text, relation) {
 			return true
 		}
@@ -21,6 +59,7 @@ func familyRequest(text string) bool {
 func resetIdentity(s *models.CallSession) {
 	s.Patient = nil
 	s.Identified = false
+	s.IdentityMisses = 0
 	s.Guardian = false
 	s.LastName = ""
 	s.FirstName = ""
@@ -94,24 +133,22 @@ func (f *FSMController) identity(ctx context.Context, s *models.CallSession, tex
 		return f.transfer(ctx, s, "101", "R-07: найдено несколько карточек пациента", "Нужна дополнительная проверка карточки. Соединяю с регистратором.")
 	}
 	if len(clients) == 0 {
-		if s.CurrentScenario != models.ScenarioBookingDirect && s.CurrentScenario != models.ScenarioHomeVisit {
-			return say(StateFinal, "Карточка с этими данными не найдена. Проверьте данные или попросите оператора.")
+		s.Identified, s.Patient = false, nil
+		s.IdentityMisses++
+		if s.IdentityMisses > 1 {
+			return f.transfer(ctx, s, "101", "R-07: карточка не найдена после повторной проверки", "Карточка не найдена. Соединяю с регистратором для проверки данных.")
 		}
-		req := models.ClientCreate{LastName: s.LastName, FirstName: s.FirstName, BirthDate: s.BirthDate}
-		if s.MiddleName != "" {
-			req.MiddleName = &s.MiddleName
-		}
-		client, err := f.misClient.CreateClient(ctx, req)
-		if err != nil {
-			return f.systemFailure(ctx, s)
-		}
-		s.Patient = client
-	} else {
-		s.Patient = &clients[0]
+		return say(StateIdentity, "Карточка не найдена. Проверьте ФИО и дату рождения, назовите их ещё раз или скажите «оператор».")
 	}
+	s.Patient = &clients[0]
 	s.Identified = true
+	s.IdentityMisses = 0
 	s.FailCount = 0
-	return f.afterIdentity(ctx, s)
+	result := f.afterIdentity(ctx, s)
+	if result.TransferTarget == "" {
+		result.BotSpeech = strings.TrimSpace(s.Patient.FirstName+" "+s.Patient.MiddleName) + ". " + result.BotSpeech
+	}
+	return result
 }
 
 func identityPrompt(s *models.CallSession) string {

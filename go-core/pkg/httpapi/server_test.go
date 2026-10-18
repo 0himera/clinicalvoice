@@ -78,6 +78,21 @@ func TestTechnicalEventsExplainFailuresWithoutPatientTextOrSecrets(t *testing.T)
 
 const defaultTestToken = "test-token"
 
+type quotaMIS struct{ misclient.MISClient }
+
+func (quotaMIS) ListVisits(context.Context, int, string) ([]models.Visit, error) {
+	return nil, &misclient.APIError{StatusCode: 429, RetryAfter: 13 * time.Second}
+}
+
+func TestQuotaExhaustionIsRetryableServiceUnavailable(t *testing.T) {
+	api, mis := testAPI(t, "")
+	api.cfg.MIS = quotaMIS{mis}
+	w := request(t, api, "GET", "/api/visits", nil, "")
+	if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") != "13" {
+		t.Fatalf("quota was hidden as gateway failure: %d %v %s", w.Code, w.Header(), w.Body)
+	}
+}
+
 func testAPI(t *testing.T, token string) (*Server, *misclient.MockMISClient) {
 	t.Helper()
 	if token == "" {

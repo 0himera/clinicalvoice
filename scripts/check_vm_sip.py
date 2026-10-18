@@ -2,7 +2,7 @@
 """Temporarily switch the VM core to a fresh mock, check real speech/SIP, restore MIS.
 
 Requires passwordless sudo and the installed systemd services. Do not run during
-a call or with a softphone registered as 200, 101 or 104. Models stay loaded;
+a call or with a softphone registered as 200, 101, 102 or 104. Models stay loaded;
 the original .env and MIS database are never rewritten.
 """
 
@@ -67,7 +67,7 @@ def main():
     contacts = subprocess.check_output(
         ["sudo", "-n", "asterisk", "-rx", "pjsip show contacts"], text=True
     )
-    if any(f"Contact:  {number}/" in contacts for number in ("200", "101", "104")):
+    if any(f"Contact:  {number}/" in contacts for number in ("200", "101", "102", "104")):
         raise SystemExit("Close diagnostic/operator softphones before running this check")
     tag = uuid.uuid4().hex[:12]
     database = ROOT / "var" / f"vm-sip-check-{tag}.db"

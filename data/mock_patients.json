@@ -1,0 +1,233 @@
+[
+  {
+    "id": 1,
+    "last_name": "Иванов",
+    "first_name": "Иван",
+    "middle_name": "Иванович",
+    "birth_date": "12.03.1985"
+  },
+  {
+    "id": 2,
+    "last_name": "Петров",
+    "first_name": "Алексей",
+    "middle_name": "Сергеевич",
+    "birth_date": "05.04.1990"
+  },
+  {
+    "id": 3,
+    "last_name": "Сидоров",
+    "first_name": "Михаил",
+    "middle_name": "Юрьевич",
+    "birth_date": "18.09.1982"
+  },
+  {
+    "id": 4,
+    "last_name": "Смирнов",
+    "first_name": "Дмитрий",
+    "middle_name": "Павлович",
+    "birth_date": "20.07.1988"
+  },
+  {
+    "id": 5,
+    "last_name": "Кузнецов",
+    "first_name": "Артем",
+    "middle_name": "Николаевич",
+    "birth_date": "11.11.1992"
+  },
+  {
+    "id": 6,
+    "last_name": "Попов",
+    "first_name": "Сергей",
+    "middle_name": "Владимирович",
+    "birth_date": "03.02.1980"
+  },
+  {
+    "id": 7,
+    "last_name": "Васильев",
+    "first_name": "Игорь",
+    "middle_name": "Олегович",
+    "birth_date": "19.10.1984"
+  },
+  {
+    "id": 8,
+    "last_name": "Федоров",
+    "first_name": "Денис",
+    "middle_name": "Викторович",
+    "birth_date": "25.12.1986"
+  },
+  {
+    "id": 9,
+    "last_name": "Морозов",
+    "first_name": "Андрей",
+    "middle_name": "Евгеньевич",
+    "birth_date": "14.01.1979"
+  },
+  {
+    "id": 10,
+    "last_name": "Иванов",
+    "first_name": "Миша",
+    "middle_name": "Иванович",
+    "birth_date": "12.03.2018"
+  },
+  {
+    "id": 11,
+    "last_name": "Алексеев",
+    "first_name": "Егор",
+    "middle_name": "Павлович",
+    "birth_date": "17.03.1985"
+  },
+  {
+    "id": 12,
+    "last_name": "Николаев",
+    "first_name": "Борис",
+    "middle_name": "Сергеевич",
+    "birth_date": "21.07.1987"
+  },
+  {
+    "id": 13,
+    "last_name": "Семенов",
+    "first_name": "Илья",
+    "middle_name": "Максимович",
+    "birth_date": "08.11.1989"
+  },
+  {
+    "id": 14,
+    "last_name": "Григорьев",
+    "first_name": "Глеб",
+    "middle_name": "Артемович",
+    "birth_date": "15.02.1993"
+  },
+  {
+    "id": 15,
+    "last_name": "Павлов",
+    "first_name": "Виктор",
+    "middle_name": "Владимирович",
+    "birth_date": "27.04.1981"
+  },
+  {
+    "id": 16,
+    "last_name": "Степанов",
+    "first_name": "Олег",
+    "middle_name": "Юрьевич",
+    "birth_date": "04.09.1986"
+  },
+  {
+    "id": 17,
+    "last_name": "Орлов",
+    "first_name": "Станислав",
+    "middle_name": "Денисович",
+    "birth_date": "13.12.1990"
+  },
+  {
+    "id": 18,
+    "last_name": "Макаров",
+    "first_name": "Тимофей",
+    "middle_name": "Романович",
+    "birth_date": "29.05.1984"
+  },
+  {
+    "id": 19,
+    "last_name": "Иванова",
+    "first_name": "Анна",
+    "middle_name": "Сергеевна",
+    "birth_date": "15.06.1988"
+  },
+  {
+    "id": 20,
+    "last_name": "Иванов",
+    "first_name": "Петр",
+    "middle_name": "Сергеевич",
+    "birth_date": "10.05.2016"
+  },
+  {
+    "id": 21,
+    "last_name": "Зайцев",
+    "first_name": "Матвей",
+    "middle_name": "Ильич",
+    "birth_date": "14.03.1978"
+  },
+  {
+    "id": 22,
+    "last_name": "Белов",
+    "first_name": "Арсений",
+    "middle_name": "Викторович",
+    "birth_date": "28.09.1983"
+  },
+  {
+    "id": 23,
+    "last_name": "Комаров",
+    "first_name": "Лев",
+    "middle_name": "Дмитриевич",
+    "birth_date": "06.12.1985"
+  },
+  {
+    "id": 24,
+    "last_name": "Борисов",
+    "first_name": "Никита",
+    "middle_name": "Андреевич",
+    "birth_date": "07.07.1990"
+  },
+  {
+    "id": 25,
+    "last_name": "Тарасов",
+    "first_name": "Вадим",
+    "middle_name": "Борисович",
+    "birth_date": "18.10.1987"
+  },
+  {
+    "id": 26,
+    "last_name": "Поляков",
+    "first_name": "Владислав",
+    "middle_name": "Эдуардович",
+    "birth_date": "31.01.1984"
+  },
+  {
+    "id": 27,
+    "last_name": "Воронов",
+    "first_name": "Кирилл",
+    "middle_name": "Александрович",
+    "birth_date": "12.08.1993"
+  },
+  {
+    "id": 28,
+    "last_name": "Михайлов",
+    "first_name": "Семен",
+    "middle_name": "Егорович",
+    "birth_date": "20.05.1986"
+  },
+  {
+    "id": 29,
+    "last_name": "Козлов",
+    "first_name": "Ярослав",
+    "middle_name": "Павлович",
+    "birth_date": "24.11.1982"
+  },
+  {
+    "id": 30,
+    "last_name": "Карпов",
+    "first_name": "Артем",
+    "middle_name": "Валерьевич",
+    "birth_date": "03.03.1988"
+  },
+  {
+    "id": 31,
+    "last_name": "Смирнова",
+    "first_name": "Ольга",
+    "middle_name": "Викторовна",
+    "birth_date": "12.03.1978"
+  },
+  {
+    "id": 32,
+    "last_name": "Петров",
+    "first_name": "Петр",
+    "middle_name": "Петрович",
+    "birth_date": "01.01.1990"
+  },
+  {
+    "id": 33,
+    "last_name": "Яковлев",
+    "first_name": "Руслан",
+    "middle_name": "Игоревич",
+    "birth_date": "17.01.1991"
+  }
+]

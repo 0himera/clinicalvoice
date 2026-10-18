@@ -58,7 +58,7 @@
     <text x="600" y="161" class="small muted">Маршрут команды 078</text>
     <rect x="910" y="80" width="250" height="95" rx="13" fill="#f8fafc" stroke="#8493a7" stroke-width="1.5" stroke-dasharray="7 6"/>
     <text x="1035" y="112" class="name">Сотрудник / пост</text>
-    <text x="1035" y="139" class="body">101 / 104 / 105</text>
+    <text x="1035" y="139" class="body">101 / 102 / 104 / 105</text>
     <text x="1035" y="161" class="small muted">После регистрации SIP</text>
     <rect x="450" y="280" width="300" height="85" rx="13" fill="#fff6e9" stroke="#ca852b" stroke-width="1.5"/>
     <text x="600" y="315" class="name">Asterisk · SIP / RTP</text>

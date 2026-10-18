@@ -187,7 +187,7 @@ func (f *FSMController) nluInformation(ctx context.Context, s *models.CallSessio
 	if preserve {
 		return f.aside(s, answer), true
 	}
-	return say(StateFinal, answer+" Могу ещё чем-то помочь?"), true
+	return say(StateFinal, answer), true
 }
 
 func (f *FSMController) directory(s *models.CallSession, specialty string, next bool) StepResult {
@@ -216,7 +216,7 @@ func (f *FSMController) directory(s *models.CallSession, specialty string, next 
 		for _, value := range profiles {
 			names = append(names, value)
 		}
-		intro = fmt.Sprintf("В расписании %d врачей по %d профилям. Специальности: ", count, len(profiles))
+		intro = fmt.Sprintf("%d врачей, %d профилей. Специальности: ", count, len(profiles))
 	} else {
 		intro = "По профилю «" + specialty + "» принимают: "
 	}
@@ -235,19 +235,23 @@ func (f *FSMController) directory(s *models.CallSession, specialty string, next 
 	if len(names) == 0 {
 		return say(StateFinal, "В действующем расписании подходящих врачей нет. Могу соединить с регистратором.")
 	}
-	start := s.DirectoryPage * 6
+	pageSize := 6
+	if specialty != "" {
+		pageSize = 3
+	}
+	start := s.DirectoryPage * pageSize
 	if start >= len(names) {
 		s.DirectoryPage = 0
 		start = 0
 	}
-	end := start + 6
+	end := start + pageSize
 	if end > len(names) {
 		end = len(names)
 	}
 	speech := intro + strings.Join(names[start:end], ", ") + "."
 	if end < len(names) {
-		speech += " Для продолжения скажите «дальше»."
+		speech += " Продолжение — «дальше»."
 	}
-	speech += " Назовите специальность или врача, к которому хотите записаться."
+	speech += " Назовите специальность или врача."
 	return say(StateDirectory, speech)
 }

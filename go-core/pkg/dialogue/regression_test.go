@@ -409,6 +409,11 @@ func TestLabelledBirthDatesAreExplicitValidatedAndOrderIndependent(t *testing.T)
 
 func TestIdentityKeepsKnownNameAndAsksOnlyForMissingBirthDate(t *testing.T) {
 	r := newRig(t)
+	// Identification tests use an existing MIS card; the voice flow must not
+	// silently register a new patient when a date was misheard.
+	if _, err := r.mis.CreateClient(context.Background(), models.ClientCreate{LastName: "Иванов", FirstName: "Иван", BirthDate: "03.05.2005"}); err != nil {
+		t.Fatal(err)
+	}
 	r.turn("Записать к врачу")
 	result := r.turn("Иванов Иван Иванович 2005 год")
 	if result.NextState != StateIdentity || r.call.FailCount != 0 || strings.Contains(result.BotSpeech, "фамили") || r.call.LastName != "Иванов" {

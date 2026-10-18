@@ -1,7 +1,7 @@
-.PHONY: help setup install build run-core run-ai docker-up docker-down health services-install gateway-install sip-check-vm test test-unit test-python lint check scenarios scenarios-voice sim sim-live sim-live-1h voice smoke logs transcripts retention-timer clean
+.PHONY: help setup install build run-core run-ai docker-up docker-down health services-install gateway-install sip-check-vm test test-unit test-python lint check scenarios scenarios-voice zer0days zer0days-voice sim sim-live sim-live-1h voice smoke logs transcripts retention-timer clean
 
 help:
-	@echo "setup install build docker-up run-core run-ai health services-install gateway-install sip-check-vm test lint check scenarios scenarios-voice sim sim-live voice smoke logs transcripts retention-timer"
+	@echo "setup install build docker-up run-core run-ai health services-install gateway-install sip-check-vm test lint check scenarios scenarios-voice zer0days zer0days-voice sim sim-live voice smoke logs transcripts retention-timer"
 
 setup:
 	python3 scripts/setup.py
@@ -74,6 +74,12 @@ scenarios: build
 
 scenarios-voice: build
 	cd ai-worker && uv run --inexact --locked --extra models python ../scripts/run_scenarios.py --voice
+
+zer0days: build
+	cd ai-worker && uv run --inexact --locked --extra models python ../scripts/run_zer0days.py
+
+zer0days-voice: build
+	cd ai-worker && uv run --inexact --locked --extra models python ../scripts/run_zer0days.py --voice --only T-06,T-10,T-12,T-17,T-18,T-36
 
 sim: build
 	cd ai-worker && uv run --inexact --locked --group dev python ../scripts/user_sim.py --backend ollama --no-voice

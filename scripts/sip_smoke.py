@@ -47,7 +47,7 @@ def sip_password(number: str) -> str:
 
 class Phone:
     def __init__(self, number="200", password=None):
-        if number not in {"200", "101", "104", "105"}:
+        if number not in {"200", "101", "102", "104", "105"}:
             raise ValueError("only loopback diagnostic accounts are allowed")
         self.number, self.password = number, password or sip_password(number)
         self.sip = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -311,21 +311,39 @@ async def main():
         await asyncio.to_thread(client.require_mock)
         before = {v["id"] for v in await asyncio.to_thread(client.visits)}
         await phone.start()
+        booking_started = time.monotonic()
         await phone.request("INVITE", "sip:700@127.0.0.1", phone.sdp())
         await phone.wait_bot()
-        for phrase in [
-            "Запишите меня к терапевту",
-            "Иванов Иван Иванович двенадцатое марта тысяча девятьсот восемьдесят пятого года",
-            "Первый вариант",
-            "Да, подтверждаю",
-            "Нет",
-            "Отмените запись",
-            "Да, отменяйте",
-        ]:
+        for index, phrase in enumerate(
+            [
+                "Запишите меня к терапевту",
+                "Иванов Иван Иванович двенадцатое марта тысяча девятьсот восемьдесят пятого года",
+                "Первый вариант",
+                "Да, подтверждаю",
+                "Нет",
+                "Отмените запись",
+                "Да, отменяйте",
+            ]
+        ):
             audio = await asyncio.to_thread(client.speak, phrase, "baya")
             await phone.say(audio)
             await phone.wait_bot()
             print("SIP turn completed")
+            if index == 3:
+                booking_seconds = time.monotonic() - booking_started
+                booked = [
+                    v for v in await asyncio.to_thread(client.visits) if v["id"] not in before
+                ]
+                assert len(booked) == 1 and booked[0]["status"] == "Запланирована", (
+                    "SIP confirmation did not create exactly one planned visit"
+                )
+                assert booking_seconds <= 150, (
+                    "measured SIP booking exceeded the 150-second test-plan target"
+                )
+                print(
+                    f"Measured loopback SIP booking: {booking_seconds:.2f} s (includes speech synthesis, RTP and processing; synthetic patient, no human think time).",
+                    flush=True,
+                )
         visits = await asyncio.to_thread(client.visits)
         created = [v for v in visits if v["id"] not in before]
         assert len(created) == 1 and created[0]["status"] == "Отменена", (

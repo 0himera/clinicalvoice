@@ -13,21 +13,24 @@ const (
 	ActionOperatorReq = "R-02"
 	ActionComplaint   = "R-03"
 	ActionAcute       = "R-11"
+	ActionDental      = "R-09"
 
 	ExtensionEmergency = "104"
 	ExtensionOperator  = "101"
 	ExtensionComplaint = "105"
+	ExtensionDental    = "102"
 
 	SpeechEmergency = "Немедленно звоните сто три или сто двенадцать! Соединяю с дежурным сотрудником поликлиники."
 	SpeechOperator  = "Соединяю с сотрудником регистратуры, пожалуйста, оставайтесь на линии."
 	SpeechAcute     = "Соединяю с регистратором, он организует срочную помощь. Если станет хуже — сразу звоните сто три."
 	SpeechComplaint = "Мне жаль, что так вышло. Соединяю вас со старшим администратором."
+	SpeechDental    = "Соединяю со стоматологическим отделением для срочной помощи."
 )
 
 type SafetyResult struct {
 	Level       models.RedFlagLevel
 	MatchedText string
-	ActionCode  string // R-01, R-02, R-03, R-11
+	ActionCode  string // R-01, R-02, R-03, R-09, R-11
 	BotResponse string // Реплика бота по регламенту
 	RouteTarget string // M0 (103/112), M2 (регистратор), M3 (старший админ)
 }
@@ -40,6 +43,8 @@ func (r SafetyResult) Extension() string {
 		return ExtensionComplaint
 	case models.FlagOperatorReq:
 		return ExtensionOperator
+	case models.FlagDental:
+		return ExtensionDental
 	}
 	return ""
 }
@@ -51,7 +56,7 @@ func (r SafetyResult) Priority() int {
 		return 3
 	case models.FlagOperatorReq:
 		return 2
-	case models.FlagComplaint:
+	case models.FlagComplaint, models.FlagDental:
 		return 1
 	}
 	return 0
@@ -108,6 +113,7 @@ func NewFastGate() *FastGate {
 		{`сильн.*бол.*беремен`, false},
 		{`начались.*схватк`, false},
 		{`не\s+хочу.*жить`, true},
+		{`(?:хочу|хочет|хотим|хотят|собираюсь|собирается)\s+(?:умереть|умирать|убить\s+себя)`, false},
 		{`угрожа.*убить`, false},
 		{`задыха[ею]т`, false},
 		{`син[ее]ет`, false},
@@ -158,6 +164,7 @@ func NewFastGate() *FastGate {
 	// Требование живого оператора (Регламент 7.3, R-02)
 	// Для человек и девушк требуются глаголы обращения/соединения, чтобы «запишите мою девушку», «я пожилой человек» не срывали диалог
 	operatorPatterns := []string{
+		`^\s*(?:пожалуйста\s+)?(?:соедините|соедини)(?:\s+(?:меня|нас|пожалуйста)){0,2}\s*$`,
 		`^\s*(человек|девушка)(\s+пожалуйста)?\s*$`,
 		`(^|[^а-яё])оператор`,
 		`(^|[^а-яё])сотрудник`,
@@ -224,11 +231,14 @@ var metaphor = regexp.MustCompile(`сердце\s+(?:кровью\s+облива
 func matchAffirmative(re *regexp.Regexp, clause string) string {
 	for _, loc := range re.FindAllStringIndex(clause, -1) {
 		match := clause[loc[0]:loc[1]]
-		if (strings.HasPrefix(match, "остр") || strings.HasPrefix(match, "невыносим")) && directNegation.MatchString(clause[:loc[0]]) {
+		if (strings.HasPrefix(match, "остр") || strings.HasPrefix(match, "невыносим") || strings.HasPrefix(match, "сильн")) && directNegation.MatchString(clause[:loc[0]]) {
 			continue
 		}
 		terms := symptomTerm.FindAllStringIndex(match, -1)
 		if len(terms) == 0 {
+			if directNegation.MatchString(clause[:loc[0]]) || followingNegation.MatchString(clause[loc[1]:]) {
+				continue
+			}
 			return match
 		}
 		for _, term := range terms {
@@ -247,6 +257,9 @@ func (fg *FastGate) Check(text string) SafetyResult {
 }
 
 var clauseSplitRegex = regexp.MustCompile(`[,.;!?]+|\s+(?:а|но|и|однако)\s+`)
+var dentalPain = regexp.MustCompile(`(?:остр\p{L}*|сильн\p{L}*|невыносим\p{L}*)\s+(?:зубн\p{L}*\s+)?бол\p{L}*|травм\p{L}*`)
+var dentalSubject = regexp.MustCompile(`зуб\p{L}*|десн\p{L}*|щек\p{L}*`)
+var dentalSwelling = regexp.MustCompile(`отек\p{L}*|опух\p{L}*`)
 
 // CheckWithContext checks the utterance locally; no model or network call is made.
 // Normalizes 'ё' -> 'е' and guarantees fail-safe priority for unsuppressed Category A triggers.
@@ -291,6 +304,11 @@ func (fg *FastGate) CheckWithContext(ctx context.Context, text string) SafetyRes
 	}
 
 	// 3. Категория Б (Острое состояние, R-11)
+	// R-09 is an organizational route from the regulation, not a diagnosis.
+	// Category A and an explicit request for a human keep their priority.
+	if dentalSubject.MatchString(norm) && (matchAffirmative(dentalPain, norm) != "" || matchAffirmative(dentalSwelling, norm) != "") {
+		return SafetyResult{Level: models.FlagDental, ActionCode: ActionDental, RouteTarget: "M4-С", BotResponse: SpeechDental}
+	}
 	for _, clause := range clauses {
 		for _, re := range fg.categoryBRegexes {
 			if match := matchAffirmative(re, clause); match != "" {

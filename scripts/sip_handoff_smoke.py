@@ -12,7 +12,11 @@ async def main():
     try:
         await asyncio.to_thread(client.wait_ready)
         await asyncio.to_thread(client.require_mock)
-        for number, phrase in [("101", "Соедините с оператором"), ("104", "Не могу дышать")]:
+        for number, phrase in [
+            ("101", "Соедините"),
+            ("104", "Хочу умереть"),
+            ("102", "Сильно болит зуб, отёк"),
+        ]:
             caller = Phone()
             operator = Phone(number)
             try:

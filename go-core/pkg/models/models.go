@@ -110,6 +110,7 @@ const (
 	FlagCategoryB   RedFlagLevel = "CATEGORY_B"   // Острое состояние -> неотложка P1
 	FlagOperatorReq RedFlagLevel = "OPERATOR_REQ" // Просьба человека -> оператор R-02
 	FlagComplaint   RedFlagLevel = "COMPLAINT"    // Жалоба -> старший администратор R-03
+	FlagDental      RedFlagLevel = "DENTAL"       // Острая зубная боль -> стоматология R-09
 )
 
 // ScenarioCode код текущего диалогового сценария
@@ -154,6 +155,7 @@ type CallSession struct {
 	Preference           string       `json:"-"`
 	TransferTarget       string       `json:"-"`
 	Identified           bool         `json:"-"`
+	IdentityMisses       int          `json:"-"`
 	ThirdParty           bool         `json:"-"`
 	HomeRequest          string       `json:"-"`
 	Guardian             bool         `json:"-"`

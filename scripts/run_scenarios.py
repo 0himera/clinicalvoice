@@ -20,6 +20,7 @@ from pathlib import Path
 
 from client import VoiceClient
 from dotenv import load_dotenv
+from mock_patients import seed_mock_database
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env", override=False)
@@ -48,6 +49,7 @@ def isolated_server(port: int = 18085):
             "DATABASE_PATH": str(db_path),
             "ASTERISK_AMI_SECRET": "",
             "DEBUG_DIALOGUE": "false",
+            "TRANSCRIPT_LOGGING": "false",
             "ALLOW_DEMO_CALLS_OUTSIDE_WINDOW": "false",
             "LLM_PROVIDER": os.getenv("LLM_PROVIDER", "ollama"),
             "LLM_MODEL": os.getenv("LLM_MODEL", "gemma4:e4b"),
@@ -67,6 +69,7 @@ def isolated_server(port: int = 18085):
     if xlsx_files:
         env["SCHEDULE_PATH"] = str(xlsx_files[0])
     (ROOT / "var").mkdir(parents=True, exist_ok=True)
+    seed_mock_database(db_path)
     log_path = ROOT / "var" / f"isolated-server-{port}.log"
     with log_path.open("w") as log:
         os.chmod(log_path, 0o600)
@@ -128,6 +131,8 @@ def run_scenario(
     started = time.monotonic()
     scenario_id = scenario["id"]
     caller = scenario.get("caller_number", "")
+    last_visit_id = None
+    rescheduled_ids = []
 
     try:
         before_visits = client.visits()
@@ -139,9 +144,19 @@ def run_scenario(
                 client.turn(step_user)
             client.end_call()
             active_visits = client.visits()
-            if active_visits:
-                outbound_visit_id = active_visits[-1]["id"]
+            added = [
+                v for v in active_visits if v["id"] not in {old["id"] for old in before_visits}
+            ]
+            assert len(added) == 1 and added[0]["status"] == "Запланирована", (
+                "reminder setup must create exactly one planned visit"
+            )
+            outbound_visit_id = added[0]["id"]
+            if "client_id" in setup:
+                assert added[0]["client_id"] == setup["client_id"], (
+                    "reminder setup selected another patient's visit"
+                )
             before_visits = active_visits
+        last_visit_id = outbound_visit_id or None
 
         init_res = client.start(caller_number=caller, outbound_visit_id=outbound_visit_id)
         if verbose:
@@ -157,7 +172,52 @@ def run_scenario(
             else:
                 spoken_text = user_text
 
+            before_turn = {v["id"]: v for v in client.visits()}
             res = client.turn(spoken_text)
+            after_turn = {v["id"]: v for v in client.visits()}
+            added = after_turn.keys() - before_turn.keys()
+            removed = before_turn.keys() - after_turn.keys()
+            changed = [
+                i for i in before_turn.keys() & after_turn.keys() if before_turn[i] != after_turn[i]
+            ]
+            outcome = step.get("expected_outcome")
+            if outcome == "BOOKED":
+                assert len(added) == 1 and not removed and not changed, (
+                    "booking must create exactly one visit and preserve all others"
+                )
+                last_visit_id = next(iter(added))
+                assert after_turn[last_visit_id]["status"] == "Запланирована", (
+                    "new visit must be planned"
+                )
+            elif outcome in ("RESCHEDULED", "CANCELLED"):
+                assert not added and not removed and len(changed) == 1, (
+                    "change must preserve IDs and affect exactly one existing visit"
+                )
+                visit_id = changed[0]
+                old, new = before_turn[visit_id], after_turn[visit_id]
+                assert last_visit_id is None or visit_id == last_visit_id, (
+                    "changed an unrelated visit"
+                )
+                assert new["client_id"] == old["client_id"], "change reassigned the patient"
+                if outcome == "RESCHEDULED":
+                    assert new["status"] == "Запланирована" and (
+                        new["scheduled_at"],
+                        new["doctor"]["id"],
+                    ) != (old["scheduled_at"], old["doctor"]["id"]), (
+                        "reschedule did not move the same visit"
+                    )
+                    rescheduled_ids.append(visit_id)
+                else:
+                    assert (
+                        new["status"] == "Отменена"
+                        and new["scheduled_at"] == old["scheduled_at"]
+                        and new["doctor"]["id"] == old["doctor"]["id"]
+                    ), "cancellation changed more than status"
+                last_visit_id = visit_id
+            else:
+                assert before_turn == after_turn, (
+                    "visit changed without a declared confirmed operation"
+                )
             curr_state = res.get("state")
             exp_state = step.get("expected_state")
 
@@ -226,8 +286,9 @@ def run_scenario(
         if "expected_visit_status" in assertions:
             after_visits = client.visits()
             expected_status = assertions["expected_visit_status"]
-            if not after_visits or after_visits[-1].get("status") != expected_status:
-                status = after_visits[-1].get("status") if after_visits else "NO_VISITS"
+            actual = next((v for v in after_visits if v["id"] == last_visit_id), None)
+            if actual is None or actual.get("status") != expected_status:
+                status = actual.get("status") if actual else "NO_VISIT_CHANGED"
                 return (
                     False,
                     f"Visit status mismatch: expected '{expected_status}', got '{status}'",
@@ -235,16 +296,7 @@ def run_scenario(
                 )
 
         if assertions.get("same_visit_id"):
-            after_visits = client.visits()
-            if before_visits and after_visits:
-                orig_id = before_visits[0]["id"]
-                new_id = after_visits[0]["id"]
-                if orig_id != new_id:
-                    return (
-                        False,
-                        f"Reschedule failed: visit ID changed from {orig_id} to {new_id}",
-                        time.monotonic() - started,
-                    )
+            assert rescheduled_ids, "no existing visit was actually rescheduled"
 
         return True, "", time.monotonic() - started
 
@@ -367,6 +419,7 @@ def main():
     try:
         client = VoiceClient()
         client.wait_ready(timeout=25, check_ai=args.voice)
+        client.require_mock()
 
         for s in selected:
             scenario_id = s["id"]

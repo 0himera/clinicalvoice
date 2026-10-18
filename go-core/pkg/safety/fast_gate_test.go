@@ -224,3 +224,42 @@ func TestIndependentHumanRequestSurvivesNegatedClause(t *testing.T) {
 		}
 	}
 }
+
+func TestZer0daysEmergencyAndShortHumanRequests(t *testing.T) {
+	gate := NewFastGate()
+	for _, phrase := range []string{"Хочу умереть", "я хочу умереть", "она хочет умереть", "не нужен оператор, хочу умереть"} {
+		if got := gate.Check(phrase); got.Level != models.FlagCategoryA || got.Extension() != "104" {
+			t.Errorf("emergency missed for %q: %+v", phrase, got)
+		}
+	}
+	for _, phrase := range []string{"Соедините", "Соедините, пожалуйста", "Пожалуйста соедините меня", "соедини меня"} {
+		if got := gate.Check(phrase); got.Level != models.FlagOperatorReq || got.Extension() != "101" {
+			t.Errorf("human request missed for %q: %+v", phrase, got)
+		}
+	}
+	for _, phrase := range []string{"Не хочу умереть", "не соединяйте меня", "соедините эти документы"} {
+		if got := gate.Check(phrase); got.Level != models.FlagNone {
+			t.Errorf("negation/unrelated request %q: %+v", phrase, got)
+		}
+	}
+}
+
+func TestDentalRouteDoesNotOverrideEmergencyOrHuman(t *testing.T) {
+	gate := NewFastGate()
+	for _, phrase := range []string{"Сильно болит зуб, отёк", "Зуб сильно болит", "Острая зубная боль", "отекла щека", "Травма зуба"} {
+		if got := gate.Check(phrase); got.ActionCode != ActionDental || got.Extension() != "102" {
+			t.Errorf("dental route missed for %q: %+v", phrase, got)
+		}
+	}
+	if got := gate.Check("Зуб болит, отёк, не могу дышать"); got.Level != models.FlagCategoryA {
+		t.Errorf("dental condition hid emergency: %+v", got)
+	}
+	if got := gate.Check("Соедините с оператором, сильно болит зуб"); got.Level != models.FlagOperatorReq {
+		t.Errorf("dental condition hid human request: %+v", got)
+	}
+	for _, phrase := range []string{"зуб не болит, отека нет", "болит зуб несильно", "не сильная боль в зубе"} {
+		if got := gate.Check(phrase); got.Level != models.FlagNone {
+			t.Errorf("non-acute/negated dental phrase %q: %+v", phrase, got)
+		}
+	}
+}

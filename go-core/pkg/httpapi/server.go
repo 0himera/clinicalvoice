@@ -159,6 +159,17 @@ func write(w http.ResponseWriter, status int, value any) {
 func problem(w http.ResponseWriter, status int, message string) {
 	write(w, status, map[string]string{"error": message})
 }
+
+func misProblem(w http.ResponseWriter, err error) {
+	var api *misclient.APIError
+	if errors.As(err, &api) && api.StatusCode == http.StatusTooManyRequests {
+		seconds := max(1, int((api.RetryAfter+time.Second-1)/time.Second))
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		problem(w, http.StatusServiceUnavailable, "MIS quota temporarily unavailable; retry later")
+		return
+	}
+	problem(w, http.StatusBadGateway, "MIS unavailable")
+}
 func decode(w http.ResponseWriter, r *http.Request, out any) bool {
 	t, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || t != "application/json" {
@@ -529,9 +540,11 @@ func (s *Server) doctors(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, s.cfg.Slots.ListDoctors())
 }
 func (s *Server) visits(w http.ResponseWriter, r *http.Request) {
-	v, err := s.cfg.MIS.ListVisits(r.Context(), 0, "")
+	ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
+	defer cancel()
+	v, err := s.cfg.MIS.ListVisits(ctx, 0, "")
 	if err != nil {
-		problem(w, 502, "MIS unavailable")
+		misProblem(w, err)
 		return
 	}
 	write(w, 200, v)
@@ -549,7 +562,7 @@ func (s *Server) client(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &api) && api.StatusCode == 404 {
 			problem(w, 404, "client not found")
 		} else {
-			problem(w, 502, "MIS unavailable")
+			misProblem(w, err)
 		}
 		return
 	}
@@ -585,7 +598,7 @@ func (s *Server) contact(w http.ResponseWriter, r *http.Request) {
 			problem(w, 404, "client not found")
 			return
 		}
-		problem(w, 502, "MIS unavailable")
+		misProblem(w, err)
 		return
 	}
 	if err := s.cfg.Store.SaveContact(r.Context(), storage.Contact{ClientID: id, Endpoint: req.Endpoint, ReminderConsent: req.Consent}); err != nil {
@@ -717,7 +730,7 @@ func (s *Server) reconcileClaims(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	visits, err := s.cfg.MIS.ListVisits(ctx, 0, "")
 	if err != nil {
-		problem(w, 502, "MIS reconciliation read failed")
+		misProblem(w, err)
 		return
 	}
 	if err := s.cfg.Slots.Reconcile(ctx, visits); err != nil {

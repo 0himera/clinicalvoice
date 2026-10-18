@@ -44,6 +44,10 @@ func (e *APIError) Error() string { return fmt.Sprintf("MIS returned HTTP %d", e
 
 var ErrNotSent = errors.New("request not sent to MIS")
 
+// Leave a small margin at the sliding minute boundary: network arrival times
+// need not have exactly the same spacing as local dispatch times.
+const requestSpacing = 6100 * time.Millisecond
+
 // Ambiguous reports whether a failed mutation may already have reached the MIS.
 // Such mutations must be reconciled, never blindly retried.
 func Ambiguous(err error) bool {
@@ -80,7 +84,7 @@ func NewRealMISClient(baseURL, token string) *RealMISClient {
 	}
 	var limiter *rate.Limiter
 	if token != "" {
-		limiter = rate.NewLimiter(rate.Every(6*time.Second), 1)
+		limiter = rate.NewLimiter(rate.Every(requestSpacing), 1)
 	}
 	return &RealMISClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
@@ -126,7 +130,25 @@ func (c *RealMISClient) waitQuota(ctx context.Context) error {
 	}
 }
 
-func (c *RealMISClient) doRequest(ctx context.Context, method, path string, body, out any) (resultErr error) {
+func (c *RealMISClient) doRequest(ctx context.Context, method, path string, body, out any) error {
+	err := c.doRequestOnce(ctx, method, path, body, out)
+	var api *APIError
+	if method != http.MethodGet || !errors.As(err, &api) || api.StatusCode != http.StatusTooManyRequests {
+		return err
+	}
+	// Only a read is retried, once, through the same limiter and Retry-After.
+	// POST/PATCH are never replayed, including on a rejected or lost response.
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= api.RetryAfter+100*time.Millisecond {
+		return err
+	}
+	retryErr := c.doRequestOnce(ctx, method, path, body, out)
+	if errors.Is(retryErr, ErrNotSent) {
+		return err // Preserve Retry-After when the read retry did not fit its budget.
+	}
+	return retryErr
+}
+
+func (c *RealMISClient) doRequestOnce(ctx context.Context, method, path string, body, out any) (resultErr error) {
 	started := time.Now()
 	var requestStarted time.Time
 	status := 0
@@ -215,7 +237,9 @@ func (c *RealMISClient) doRequest(ctx context.Context, method, path string, body
 		if resp.StatusCode == http.StatusTooManyRequests {
 			e.RetryAfter = retryDelay(resp.Header.Get("Retry-After"), time.Now())
 			c.mu.Lock()
-			c.blockedUntil = time.Now().Add(e.RetryAfter)
+			if until := time.Now().Add(max(e.RetryAfter, 100*time.Millisecond)); until.After(c.blockedUntil) {
+				c.blockedUntil = until
+			}
 			c.mu.Unlock()
 		}
 		return e

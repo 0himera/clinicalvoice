@@ -96,6 +96,49 @@ func Test429AndMutationsAreNotBlindlyRetried(t *testing.T) {
 		t.Fatal("unsent request was marked as ambiguous")
 	}
 }
+
+func TestReadRecoversFrom429ThroughRetryAfter(t *testing.T) {
+	var count atomic.Int32
+	var first, second time.Time
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if count.Add(1) == 1 {
+			first = time.Now()
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		second = time.Now()
+		_ = json.NewEncoder(w).Encode(models.Visit{ID: 42, Status: models.VisitPlanned})
+	}))
+	defer server.Close()
+	c := NewRealMISClient(server.URL, "fixture")
+	c.limiter = rate.NewLimiter(rate.Inf, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	visit, err := c.GetVisit(ctx, 42)
+	if err != nil || visit.ID != 42 || count.Load() != 2 || second.Sub(first) < time.Second {
+		t.Fatalf("read retry ignored backoff/result: visit=%+v err=%v count=%d gap=%s", visit, err, count.Load(), second.Sub(first))
+	}
+}
+
+func TestReadQuotaBeyondDeadlinePreservesRetryAfter(t *testing.T) {
+	var count atomic.Int32
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count.Add(1)
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(429)
+	}))
+	defer s.Close()
+	c := NewRealMISClient(s.URL, "fixture")
+	c.limiter = rate.NewLimiter(rate.Inf, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err := c.GetVisit(ctx, 1)
+	var api *APIError
+	if !errors.As(err, &api) || api.StatusCode != 429 || api.RetryAfter != time.Minute || count.Load() != 1 {
+		t.Fatalf("exhausted read budget: err=%v requests=%d", err, count.Load())
+	}
+}
 func TestMockPersistenceAndTerminalStates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	store, err := storage.Open(path)
