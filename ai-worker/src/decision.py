@@ -32,50 +32,23 @@ class DecisionEngine(Protocol):
         ...
 
 
-def _fast_doctor_excerpt(target_text: str) -> dict[str, Any] | None:
-    """Fast substring extractor for doctor names/specialties without neural multi-pass loops."""
-    t_lower = target_text.lower()
-    # 1. Known doctor surnames and specialties from clinical stand
-    names = (
-        "богдановой",
-        "богданова",
-        "богданов",
-        "васильевой",
-        "васильева",
-        "васильев",
-        "ивановой",
-        "иванова",
-        "иванов",
-        "петровой",
-        "петрова",
-        "петров",
-        "смирновой",
-        "смирнова",
-        "смирнов",
-        "сидоровой",
-        "сидорова",
-        "сидоров",
-        "кузнецовой",
-        "кузнецова",
-        "кузнецов",
-        "терапевт",
-        "кардиолог",
-        "хирург",
-        "окулист",
-        "невролог",
-        "отоларинголог",
-        "лор",
-        "pediatrician",
-        "therapist",
-        "cardiologist",
-        "doctor",
-        "surgeon",
-    )
-    for name in names:
-        pos = t_lower.find(name)
-        if pos >= 0:
-            start_idx = pos
-            end_idx = pos + len(name)
+def _fast_doctor_excerpt(target_text: str, q_text: str = "") -> dict[str, Any] | None:
+    """Fast substring extractor for doctor names/specialties without hardcoding doctor surnames."""
+    q_lower = q_text.lower()
+    is_surname_only = any(k in q_lower for k in ("surname", "фамил"))
+    is_specialty_only = any(k in q_lower for k in ("special", "специальн"))
+
+    # 1. Match Russian doctor surnames (declensions after prepositions or titles, e.g. "к Богдановой", "у Васильевой")
+    if not is_specialty_only:
+        prep_pattern = re.compile(
+            r"(?:(?:к|у)\s+(?:врачу\s+|доктору\s+|[а-яё]+у\s+)?|врач[уе]?\s+|доктор[уе]?\s+)"
+            r"([А-ЯЁ][а-яё]*(?:ов|ев|ин|ын|ск)[а-яё]*)\b",
+            re.IGNORECASE,
+        )
+        m = prep_pattern.search(target_text)
+        if m:
+            start_idx = m.start(1)
+            end_idx = m.end(1)
             return {
                 "type": "excerpt",
                 "text": target_text[start_idx:end_idx],
@@ -84,24 +57,220 @@ def _fast_doctor_excerpt(target_text: str) -> dict[str, Any] | None:
                 "probability": 0.95,
             }
 
-    # 2. Match Russian surname declensions following prepositions/titles (e.g. "к Богдановой", "у Васильевой")
-    pattern = re.compile(
-        r"(?:(?:к|у)\s+(?:врачу\s+|доктору\s+|терапевту\s+)?|врач[уе]?\s+|доктор[уе]?\s+)"
-        r"([А-ЯЁа-яё]+(?:ов[ае]?|ев[ае]?|ин[ае]?|ын[ае]?|ск[ио][йяе]?))\b",
-        re.IGNORECASE,
-    )
-    m = pattern.search(target_text)
-    if m:
-        start_idx = m.start(1)
-        end_idx = m.end(1)
-        return {
-            "type": "excerpt",
-            "text": target_text[start_idx:end_idx],
-            "start": start_idx,
-            "end": end_idx,
-            "probability": 0.92,
-        }
+        # Standalone capitalized Russian surname
+        cap_pattern = re.compile(r"\b([А-ЯЁ][а-яё]*(?:ов|ев|ин|ын|ск)[а-яё]*)\b")
+        for m in cap_pattern.finditer(target_text):
+            word = m.group(1)
+            if word.lower() not in {"один", "позже", "рано", "утром", "вечером", "вариант", "день"}:
+                start_idx = m.start(1)
+                end_idx = m.end(1)
+                return {
+                    "type": "excerpt",
+                    "text": target_text[start_idx:end_idx],
+                    "start": start_idx,
+                    "end": end_idx,
+                    "probability": 0.92,
+                }
+
+    # 2. Match medical specialties (only when question is not surname-only)
+    if not is_surname_only:
+        t_lower = target_text.lower()
+        specialties = (
+            "оториноларинголог",
+            "отоларинголог",
+            "травматолог-ортопед",
+            "травматолог",
+            "дерматовенеролог",
+            "гастроэнтеролог",
+            "эндокринолог",
+            "дерматолог",
+            "офтальмолог",
+            "гинеколог",
+            "кардиолог",
+            "невролог",
+            "терапевт",
+            "педиатр",
+            "хирург",
+            "окулист",
+            "уролог",
+            "лор",
+            "pediatrician",
+            "therapist",
+            "cardiologist",
+            "ophthalmologist",
+            "neurologist",
+            "surgeon",
+            "doctor",
+        )
+        for spec in specialties:
+            pos = t_lower.find(spec)
+            if pos >= 0:
+                start_idx = pos
+                end_idx = pos + len(spec)
+                return {
+                    "type": "excerpt",
+                    "text": target_text[start_idx:end_idx],
+                    "start": start_idx,
+                    "end": end_idx,
+                    "probability": 0.95,
+                }
+
     return None
+
+
+def _is_vital_threat(target_text: str) -> tuple[bool, float]:
+    """Evaluates whether target_text expresses an acute vital medical threat.
+
+    Synchronized with go-core/pkg/safety/fast_gate.go RedFlag Category A triggers.
+    """
+    t_lower = target_text.lower()
+
+    # Metaphors
+    if "кровью обливается" in t_lower or "heart bleeds" in t_lower:
+        return False, 0.01
+
+    # Synchronized Category A positive patterns
+    positive_stems = (
+        "боль в груди",
+        "болит в груди",
+        "боли в груди",
+        "давит в груди",
+        "давят в груди",
+        "жжет в груди",
+        "жжёт в груди",
+        "печет в груди",
+        "печёт в груди",
+        "давит за грудин",
+        "в груди болит",
+        "в груди боль",
+        "в груди давит",
+        "в груди жжет",
+        "в груди жжёт",
+        "в груди печет",
+        "в груди печёт",
+        "отдает в руку",
+        "отдает в лев",
+        "отдаёт в руку",
+        "отдаёт в лев",
+        "в руку отдает",
+        "в руку отдаёт",
+        "сердечный приступ",
+        "сердечн приступ",
+        "инфаркт",
+        "не могу дышать",
+        "дышать не могу",
+        "не может дышать",
+        "дышать не может",
+        "не можем дышать",
+        "трудно дышать",
+        "тяжело дышать",
+        "нечем дышать",
+        "не дышит",
+        "не дышу",
+        "задыхается",
+        "задыхаюсь",
+        "задыха",
+        "не хватает воздуха",
+        "воздух не хватает",
+        "удушье",
+        "боль в сердце",
+        "болит сердце",
+        "сердце болит",
+        "потерял сознание",
+        "потеряла сознание",
+        "без сознания",
+        "не приходит в себя",
+        "не могу разбудить",
+        "упал в обморок",
+        "упала в обморок",
+        "перекосило лицо",
+        "отнялась рука",
+        "отнялась нога",
+        "инсульт",
+        "онемела половина тела",
+        "не может говорить",
+        "речь невнятная",
+        "не может глотать",
+        "судороги",
+        "припадок",
+        "сильное кровотечение",
+        "кровь не останавливается",
+        "кровь изо рта",
+        "рвота кровью",
+        "дтп",
+        "удар головой",
+        "упал с высоты",
+        "упала с высоты",
+        "отек горла",
+        "отек лица",
+        "анафилактическ",
+        "отравился",
+        "выпил химию",
+        "наглотался таблеток",
+        "укусила змея",
+        "ребенок посинел",
+        "ребёнок посинел",
+        "ребенок проглотил",
+        "ребёнок проглотил",
+        "младенец вялый",
+        "беременная кровотечение",
+        "отошли воды",
+        "не хочу жить",
+        "покончить с собой",
+        # English
+        "chest pain",
+        "pain in chest",
+        "pressure in chest",
+        "heart attack",
+        "can't breathe",
+        "cannot breathe",
+        "difficulty breathing",
+        "choking",
+        "suffocating",
+        "stroke",
+        "unconscious",
+        "loss of consciousness",
+        "lost consciousness",
+        "severe bleeding",
+        "anaphylactic",
+    )
+
+    # Local negations
+    negation_stems = (
+        "не задыха",
+        "нет боли в груди",
+        "не болит в груди",
+        "в груди не болит",
+        "в груди нет боли",
+        "не давит в груди",
+        "в груди не давит",
+        "не жжет в груди",
+        "в груди не жжет",
+        "не болит",
+        "нет боли",
+        "not choking",
+        "no chest pain",
+        "no pain",
+        "can breathe",
+    )
+
+    has_threat = any(stem in t_lower for stem in positive_stems)
+    if not has_threat:
+        return False, 0.05
+
+    has_negation = any(neg in t_lower for neg in negation_stems)
+    if has_negation:
+        # Check fail-safe: is there an unsuppressed positive clause?
+        clauses = re.split(r"[,.;!?]+|\s+(?:а|но)\s+", t_lower)
+        for clause in clauses:
+            clause = clause.strip()
+            if any(stem in clause for stem in positive_stems) and not any(
+                neg in clause for neg in negation_stems
+            ):
+                return True, 0.98
+        return False, 0.02
+
+    return True, 0.98
 
 
 class THX01Engine:
@@ -161,7 +330,7 @@ class THX01Engine:
                     k in q_text
                     for k in ("surname", "doctor", "specialist", "специалист", "фамил", "врач")
                 ):
-                    extracted = _fast_doctor_excerpt(target_text)
+                    extracted = _fast_doctor_excerpt(target_text, q_text)
                     if extracted:
                         fast_answers[qid] = extracted
                         eval_questions.pop(qid, None)
@@ -294,32 +463,9 @@ class FakeDecisionEngine:
                             for k in ("emergency", "vital threat", "acute threat", "угроз")
                         )
                     ):
-                        if any(
-                            k in t_lower
-                            for k in (
-                                "боль в груди",
-                                "болит в груди",
-                                "давит в груди",
-                                "удушье",
-                                "инсульт",
-                                "не дышит",
-                                "chest pain",
-                                "heart attack",
-                                "choking",
-                            )
-                        ):
-                            if not any(
-                                neg in t_lower
-                                for neg in (
-                                    "не задыха",
-                                    "нет боли",
-                                    "не болит",
-                                    "кровью обливается",
-                                    "not choking",
-                                    "no chest pain",
-                                )
-                            ):
-                                opt_score += 2.0
+                        is_threat, _ = _is_vital_threat(target_text)
+                        if is_threat:
+                            opt_score += 2.0
 
                     elif (
                         key_lower in ("affirm", "yes")
@@ -499,8 +645,10 @@ class FakeDecisionEngine:
                         ):
                             opt_score += 2.0
 
-                    elif opt_key == "BOOKING" or any(
-                        k in desc_lower for k in ("book", "appointment", "booking", "запис")
+                    elif opt_key == "BOOKING" or (
+                        any(k in desc_lower for k in ("book", "appointment", "booking", "запис"))
+                        and "cancel" not in desc_lower
+                        and "отмен" not in desc_lower
                     ):
                         if any(
                             w in t_lower
@@ -777,13 +925,6 @@ class FakeDecisionEngine:
                 # Softmax normalization
                 total = sum(scores.values()) or 1.0
                 probs = {k: round(v / total, 4) for k, v in scores.items()}
-                # Ensure winning choice has calibrated probability
-                if best_choice and probs[best_choice] < 0.60:
-                    probs[best_choice] = 0.88
-                    rem = 0.12 / max(1, len(probs) - 1)
-                    for k in probs:
-                        if k != best_choice:
-                            probs[k] = round(rem, 4)
 
                 conf = probs.get(best_choice, 0.5) if best_choice else 0.5
                 answers[qid] = {
@@ -798,43 +939,7 @@ class FakeDecisionEngine:
                 q_text = str(q.get("question", "")).lower()
                 p_true = 0.05
                 if any(k in q_text for k in ("threat", "vital", "acute", "угроз", "жизн", "остр")):
-                    if any(
-                        w in t_lower
-                        for w in (
-                            "давит в груди",
-                            "боль в груди",
-                            "болит в груди",
-                            "задыхается",
-                            "задыхаюсь",
-                            "инфаркт",
-                            "инсульт",
-                            "удушье",
-                            "не дышит",
-                            "chest pain",
-                            "heart attack",
-                            "choking",
-                            "can't breathe",
-                            "cannot breathe",
-                            "stroke",
-                        )
-                    ):
-                        if any(
-                            neg in t_lower
-                            for neg in (
-                                "не задыха",
-                                "нет боли",
-                                "не болит",
-                                "кровью обливается",
-                                "not choking",
-                                "no chest pain",
-                                "no pain",
-                            )
-                        ):
-                            p_true = 0.02
-                        else:
-                            p_true = 0.98
-                    elif "кровью обливается" in t_lower or "heart bleeds" in t_lower:
-                        p_true = 0.01
+                    _, p_true = _is_vital_threat(target_text)
                 elif _any_word(t_lower, ("да", "верно", "подтверждаю", "yes", "true", "correct")):
                     p_true = 0.95
 
@@ -856,7 +961,7 @@ class FakeDecisionEngine:
                     k in q_text
                     for k in ("surname", "doctor", "specialist", "специалист", "фамил", "врач")
                 ):
-                    extracted = _fast_doctor_excerpt(target_text)
+                    extracted = _fast_doctor_excerpt(target_text, q_text)
                     if extracted:
                         span_text = extracted["text"]
                         start_idx = extracted["start"]

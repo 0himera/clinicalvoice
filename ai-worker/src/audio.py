@@ -76,8 +76,9 @@ class ResettingVAD:
 class EndpointDetector:
     """32 ms VAD frames, 192 ms pre-roll, 640 ms hangover and a 20 s ceiling."""
 
-    def __init__(self, is_speech: Callable[[bytes], bool]):
+    def __init__(self, is_speech: Callable[[bytes], bool], barge_threshold: int = 2):
         self.is_speech = is_speech
+        self.barge_threshold = barge_threshold
         self.pending = bytearray()
         self.pre_roll: deque[bytes] = deque(maxlen=6)
         self.speech = bytearray()
@@ -96,7 +97,7 @@ class EndpointDetector:
             del self.pending[:512]
             voiced = self.is_speech(chunk)
             self.barge_frames = self.barge_frames + 1 if voiced else 0
-            barge_in |= self.barge_frames == 4
+            barge_in |= self.barge_frames == self.barge_threshold
             if voiced:
                 if not self.speech:
                     self.speech.extend(b"".join(self.pre_roll))

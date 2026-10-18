@@ -15,9 +15,11 @@ var (
 	reOMS = regexp.MustCompile(`\b\d{16}\b`)
 	// Bank card: 16 digits (4-4-4-4)
 	reBankCard = regexp.MustCompile(`\b\d{4}[-\s]\d{4}[-\s]\d{4}[-\s]\d{4}\b`)
+	// Date of birth: DD.MM.YYYY, DD/MM/YYYY, DD-MM-YYYY, etc.
+	reDOB = regexp.MustCompile(`\b\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}\b`)
 )
 
-// MaskPII sanitizes sensitive personal data (phones, passports, SNILS, OMS, cards)
+// MaskPII sanitizes sensitive personal data (phones, passports, SNILS, OMS, cards, DOB)
 // before passing user speech to LLM classification endpoints, guaranteeing 152-FZ compliance.
 func MaskPII(text string) string {
 	if text == "" {
@@ -28,5 +30,6 @@ func MaskPII(text string) string {
 	s = reSNILS.ReplaceAllString(s, "[СНИЛС]")
 	s = reOMS.ReplaceAllString(s, "[ОМС]")
 	s = reBankCard.ReplaceAllString(s, "[КАРТА]")
+	s = reDOB.ReplaceAllString(s, "[ДАТА]")
 	return s
 }

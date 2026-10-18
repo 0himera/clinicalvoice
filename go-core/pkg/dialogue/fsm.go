@@ -119,9 +119,13 @@ func (f *FSMController) transfer(ctx context.Context, s *models.CallSession, tar
 		if s.Patient != nil {
 			id = s.Patient.ID
 		}
-		contextText := reason + "; сценарий: " + string(s.CurrentScenario) + "; специальность: " + s.Specialty
-		if s.CallerNumber != "" {
-			contextText += "; контакт (ANI): " + s.CallerNumber
+		actionCode := r.ReasonCode
+		if actionCode == "" {
+			actionCode, _, _ = strings.Cut(reason, ":")
+		}
+		contextText := actionCode
+		if s.CallID != "" {
+			contextText += "; звонок: " + s.CallID
 		}
 		if err := f.escalate(ctx, id, contextText); err == nil {
 			r.EscalationQueued = true
@@ -207,11 +211,7 @@ func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession,
 		if s.CurrentState == StateTransfer && s.TransferTarget == target {
 			return StepResult{NextState: StateTransfer, TransferTarget: target, BotSpeech: gate.BotResponse}
 		}
-		trigger := []rune(gate.MatchedText)
-		if len(trigger) > 200 {
-			trigger = trigger[:200]
-		}
-		return f.transfer(ctx, s, target, gate.ActionCode+": "+string(gate.Level)+"; триггер: "+string(trigger), gate.BotResponse)
+		return f.transfer(ctx, s, target, gate.ActionCode+": "+string(gate.Level), gate.BotResponse)
 	}
 	if s.CurrentState == StateTransfer {
 		return StepResult{NextState: StateTransfer, TransferTarget: s.TransferTarget, BotSpeech: "Соединяю с сотрудником. Оставайтесь на линии."}

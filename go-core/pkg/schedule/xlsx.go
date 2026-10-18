@@ -106,6 +106,16 @@ func rows(z *zip.ReadCloser, file string, shared []string, visit func([]string) 
 			}
 			values[i] = strings.TrimSpace(v)
 		}
+		empty := true
+		for _, v := range values {
+			if v != "" {
+				empty = false
+				break
+			}
+		}
+		if empty {
+			continue
+		}
 		if err = visit(values); err != nil {
 			return err
 		}
@@ -207,14 +217,11 @@ func LoadXLSX(filename string) (Snapshot, error) {
 	doctors := map[string]models.Doctor{}
 	names := map[string]bool{}
 	err = rows(z, sheets["Врачи"], shared, func(r []string) error {
-		if len(r) == 0 {
-			return nil
+		for len(r) < 7 {
+			r = append(r, "")
 		}
-		if r[0] == "ID" {
+		if r[0] == "" || r[0] == "ID" {
 			return nil
-		}
-		if len(r) < 7 {
-			return fmt.Errorf("incomplete doctor row")
 		}
 		if r[1] == "" || r[3] == "" {
 			return errors.New("doctor name and specialty are required")
@@ -241,14 +248,11 @@ func LoadXLSX(filename string) (Snapshot, error) {
 	}
 	seen := map[string]bool{}
 	err = rows(z, sheets["Слоты"], shared, func(r []string) error {
-		if len(r) == 0 {
-			return nil
+		for len(r) < 12 {
+			r = append(r, "")
 		}
-		if r[0] == "ID слота" {
+		if r[0] == "" || r[0] == "ID слота" {
 			return nil
-		}
-		if len(r) < 12 {
-			return fmt.Errorf("incomplete slot row")
 		}
 		d, ok := doctors[r[3]]
 		if !ok {
@@ -378,8 +382,10 @@ func excelDate(s string) (time.Time, error) {
 	return time.Date(1899, 12, 30, 0, 0, 0, 0, models.ClinicLocation).AddDate(0, 0, int(n)), nil
 }
 func excelMinutes(s string) (int, error) {
-	if t, e := time.Parse("15:04", s); e == nil {
-		return t.Hour()*60 + t.Minute(), nil
+	for _, layout := range []string{"15:04", "3:04", "15:04:05", "3:04:05"} {
+		if t, e := time.Parse(layout, s); e == nil {
+			return t.Hour()*60 + t.Minute(), nil
+		}
 	}
 	n, e := strconv.ParseFloat(s, 64)
 	if e != nil || n < 0 || n >= 1 {

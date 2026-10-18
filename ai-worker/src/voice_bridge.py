@@ -1,6 +1,7 @@
 """HTTP speech API plus the locally bound Asterisk transports."""
 
 import asyncio
+import hashlib
 import logging
 import secrets
 import time
@@ -46,8 +47,12 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
     async def authenticate(request: Request, call_next):
         path = request.url.path.rstrip("/")
         if settings.api_token and path not in ("/health", "/healthz", "/readyz"):
-            expected = "Bearer " + settings.api_token
-            if not secrets.compare_digest(request.headers.get("authorization", ""), expected):
+            expected = ("Bearer " + settings.api_token).encode("utf-8")
+            provided = request.headers.get("authorization", "").encode("utf-8")
+            if not secrets.compare_digest(
+                hashlib.sha256(provided).digest(),
+                hashlib.sha256(expected).digest(),
+            ):
                 return Response(status_code=401, headers={"WWW-Authenticate": "Bearer"})
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
@@ -104,7 +109,9 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
 
     @app.post("/v1/decide")
     @app.post("/decide")
-    async def evaluate_decision(req: DecisionRequestBody):
+    async def evaluate_decision(req: DecisionRequestBody, request: Request):
+        if await request.is_disconnected():
+            return Response(status_code=499)
         ready = getattr(app.state, "services", None)
         if ready is None or getattr(ready, "decision", None) is None:
             raise HTTPException(503, "decision engine is not ready")
@@ -120,9 +127,13 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
                     answers = answers["answers"]
         except TimeoutError:
             raise HTTPException(504, "decision evaluation timed out") from None
+        except HTTPException:
+            raise
         except Exception as exc:
-            logger.warning("Decision engine failed (%s): %s", type(exc).__name__, exc)
-            raise HTTPException(500, f"decision engine error: {exc}") from None
+            logger.warning("Decision engine failed (%s)", type(exc).__name__)
+            raise HTTPException(500, "Decision engine evaluation failed") from None
+        if await request.is_disconnected():
+            return Response(status_code=499)
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
         logger.info(
             "Decision request evaluated in %.1f ms (%d questions)", elapsed_ms, len(req.questions)

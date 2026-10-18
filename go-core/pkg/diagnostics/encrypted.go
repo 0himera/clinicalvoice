@@ -60,6 +60,11 @@ func CreateKey(path string) error {
 	}
 	defer file.Close()
 	key := make([]byte, 32)
+	defer func() {
+		for i := range key {
+			key[i] = 0
+		}
+	}()
 	if _, err = rand.Read(key); err != nil {
 		return err
 	}
@@ -86,6 +91,11 @@ func LoadCipher(keyPath string) (cipher.AEAD, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		for i := range key {
+			key[i] = 0
+		}
+	}()
 	if len(key) != 32 {
 		return nil, errors.New("transcript key must contain exactly 32 bytes")
 	}

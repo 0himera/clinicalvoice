@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/himera/tochka-voice/go-core/pkg/llmclient"
 	"github.com/himera/tochka-voice/go-core/pkg/models"
 )
 
@@ -44,7 +45,12 @@ func (f *FSMController) identity(ctx context.Context, s *models.CallSession, tex
 	missingBirth := birth == "" && s.BirthDate == ""
 	understanding, _ := ctx.Value(nluContextKey{}).(*nluTurn)
 	if missingName || missingBirth || (understanding != nil && understanding.result != nil) {
-		nlu := f.understand(ctx, text, StateIdentity)
+		var nlu *llmclient.ExtractedNLU
+		// SEC-01 (152-FZ): Strictly forbid calling remote LLMs (!f.llmClient.IsLocal()).
+		// If LLM is remote, extraction of FIO and DOB must be performed exclusively locally.
+		if f.llmClient != nil && f.llmClient.IsLocal() {
+			nlu = f.understand(ctx, text, StateIdentity)
+		}
 		if result, ok := f.nluInformation(ctx, s, nlu); ok {
 			return result
 		}

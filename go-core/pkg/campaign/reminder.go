@@ -88,6 +88,15 @@ func (r *Runner) Schedule(ctx context.Context, now time.Time) error {
 	return nil
 }
 
+func (r *Runner) ExtendLease(ctx context.Context, visitID int, duration time.Duration) error {
+	if r == nil || r.store == nil || visitID <= 0 {
+		return nil
+	}
+	until := time.Now().Add(duration).Unix()
+	_, err := r.store.DB.ExecContext(ctx, "UPDATE reminders SET lease_until=? WHERE visit_id=? AND status='DIALING'", until, visitID)
+	return err
+}
+
 func (r *Runner) Dial(ctx context.Context, id int, now time.Time) error {
 	if !r.allowed(now) && !r.allowDemo {
 		return errors.New("calling window is closed")
@@ -112,6 +121,13 @@ func (r *Runner) Dial(ctx context.Context, id int, now time.Time) error {
 	at, err := models.ParseDateTime(v.ScheduledAt)
 	if err != nil || !at.After(now) {
 		return errors.New("visit must be in the future")
+	}
+	var existingAttempts int
+	var existingStatus string
+	if err = r.store.ReadDB().QueryRowContext(ctx, "SELECT attempts, status FROM reminders WHERE visit_id=?", id).Scan(&existingAttempts, &existingStatus); err == nil {
+		if existingAttempts >= 2 || existingStatus == "NO_ANSWER" {
+			return errors.New("reminder attempts exhausted")
+		}
 	}
 	if _, err = r.store.DB.ExecContext(ctx, "INSERT OR IGNORE INTO reminders(visit_id,scheduled_at) VALUES(?,?)", v.ID, v.ScheduledAt); err != nil {
 		return err
@@ -148,6 +164,12 @@ func (r *Runner) dispatch(ctx context.Context, id int, now time.Time) error {
 	}
 	query += " ORDER BY scheduled_at,visit_id LIMIT 1"
 	if err = tx.QueryRowContext(ctx, query, args...).Scan(&visitID, &at); errors.Is(err, sql.ErrNoRows) {
+		if id > 0 {
+			var att int
+			if errCheck := tx.QueryRowContext(ctx, "SELECT attempts FROM reminders WHERE visit_id=?", id).Scan(&att); errCheck == nil && att >= 2 {
+				return errors.New("reminder attempts exhausted")
+			}
+		}
 		return nil
 	} else if err != nil {
 		return err

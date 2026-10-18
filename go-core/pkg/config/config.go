@@ -115,6 +115,9 @@ func Load() (Config, error) {
 	if err != nil || p < 1 || p > 65535 {
 		return c, fmt.Errorf("PORT must be between 1 and 65535")
 	}
+	if strings.TrimSpace(c.APIToken) == "" {
+		return c, errors.New("CORE_API_TOKEN is required")
+	}
 	ip := net.ParseIP(host)
 	if host != "localhost" && (ip == nil || !ip.IsLoopback()) && len(c.APIToken) < 24 {
 		return c, fmt.Errorf("CORE_API_TOKEN of at least 24 characters is required for a non-loopback bind")

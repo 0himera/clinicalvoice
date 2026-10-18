@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -178,7 +179,7 @@ func (f *FSMController) chooseSlot(ctx context.Context, s *models.CallSession, t
 		}
 	}
 	chosen := s.Options[index]
-	key, err := f.slotMgr.HoldSlot(chosen.DoctorID, chosen.StartTime, s.CallID, 2*time.Minute)
+	key, err := f.slotMgr.HoldSlot(ctx, chosen.DoctorID, chosen.StartTime, s.CallID, 2*time.Minute)
 	if errors.Is(err, slotmgr.ErrUnavailable) {
 		return f.offer(ctx, s)
 	}
@@ -207,7 +208,9 @@ func (f *FSMController) confirmBooking(ctx context.Context, s *models.CallSessio
 	case IntentAffirm:
 		confirmed = true
 	default:
-		if f.decisionClient != nil && f.decisionClient.IsEnabled() {
+		// SEC-01 (152-FZ): In confirmation states (StateConfirmBooking), remote LLM is strictly prohibited (!f.llmClient.IsLocal()).
+		// Only local models/parsers are permitted.
+		if f.decisionClient != nil && f.decisionClient.IsEnabled() && f.decisionClient.IsLocal() {
 			slotDesc := ""
 			if s.SelectedSlot != nil {
 				slotDesc = fmt.Sprintf("%s, %s", s.SelectedSlot.Doctor, FormatDateRussian(s.SelectedSlot.StartTime))
@@ -327,10 +330,16 @@ func (f *FSMController) confirmBooking(ctx context.Context, s *models.CallSessio
 		return f.systemFailure(ctx, s)
 	}
 	if s.CurrentScenario == models.ScenarioReschedule {
-		_ = f.slotMgr.Cancel(context.WithoutCancel(ctx), s.VisitID)
+		if cancelErr := f.slotMgr.Cancel(context.WithoutCancel(ctx), s.VisitID); cancelErr != nil {
+			slog.Error("failed to cancel old slot on reschedule, deferred cleanup needed", "visit_id", s.VisitID, "error", cancelErr)
+		}
 	}
 	if err = f.slotMgr.Resolve(context.WithoutCancel(ctx), slot, s.CallID, visit.ID, false); err != nil {
-		return f.systemFailure(ctx, s)
+		if s.CurrentScenario == models.ScenarioReschedule {
+			slog.Error("failed to resolve new slot on reschedule, continuing since MIS was updated", "visit_id", visit.ID, "error", err)
+		} else {
+			return f.systemFailure(ctx, s)
+		}
 	}
 	s.SelectedSlot = nil
 	s.SlotHeldKey = ""

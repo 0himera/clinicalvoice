@@ -32,7 +32,7 @@ func TestConcurrentHoldHasExactlyOneWinner(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if _, err := sm.HoldSlot(slot.DoctorID, slot.StartTime, string(rune('a'+i)), time.Minute); err == nil {
+			if _, err := sm.HoldSlot(context.Background(), slot.DoctorID, slot.StartTime, string(rune('a'+i)), time.Minute); err == nil {
 				won.Add(1)
 			}
 		}(i)
@@ -45,7 +45,7 @@ func TestConcurrentHoldHasExactlyOneWinner(t *testing.T) {
 func TestClaimsSurviveRestartAndExpiredHoldsCannotCommit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "slots.db")
 	sm, db, slot := fixture(t, path)
-	if _, err := sm.HoldSlot(slot.DoctorID, slot.StartTime, "caller", time.Minute); err != nil {
+	if _, err := sm.HoldSlot(context.Background(), slot.DoctorID, slot.StartTime, "caller", time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if err := sm.MarkPending(context.Background(), slot, "caller"); err != nil {
@@ -63,13 +63,13 @@ func TestClaimsSurviveRestartAndExpiredHoldsCannotCommit(t *testing.T) {
 	}
 	defer db.Close()
 	sm = New(db, schedule.Snapshot{Doctors: models.DemoDoctors(), Entries: []schedule.Entry{{Free: true, Slot: slot}}})
-	if _, err = sm.HoldSlot(slot.DoctorID, slot.StartTime, "other", time.Minute); err == nil {
+	if _, err = sm.HoldSlot(context.Background(), slot.DoctorID, slot.StartTime, "other", time.Minute); err == nil {
 		t.Fatal("booking lost on restart")
 	}
 	if err = sm.Cancel(context.Background(), 5001); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = sm.HoldSlot(slot.DoctorID, slot.StartTime, "other", time.Minute); err != nil {
+	if _, err = sm.HoldSlot(context.Background(), slot.DoctorID, slot.StartTime, "other", time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	_, err = db.DB.Exec("UPDATE slot_claims SET expires_at=0")
@@ -92,5 +92,24 @@ func TestDirectBookingRules(t *testing.T) {
 		if sm.IsDirectBookingAllowed(s) {
 			t.Errorf("referral bypass for %s", s)
 		}
+	}
+}
+
+func TestPurgeExpired(t *testing.T) {
+	sm, db, slot := fixture(t, ":memory:")
+	defer db.Close()
+	if _, err := sm.HoldSlot(context.Background(), slot.DoctorID, slot.StartTime, "caller1", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	// Expire the hold
+	if _, err := db.WriteDB().Exec("UPDATE slot_claims SET expires_at=?", time.Now().Add(-time.Minute).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.PurgeExpired(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.ReadDB().QueryRow("SELECT COUNT(*) FROM slot_claims WHERE status='held'").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("expected 0 held slots after purge, got %d, err: %v", count, err)
 	}
 }

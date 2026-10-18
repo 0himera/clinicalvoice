@@ -2,7 +2,6 @@
 
 import io
 import os
-import threading
 from math import gcd
 
 import numpy as np
@@ -13,7 +12,6 @@ from scipy.signal import resample_poly
 
 class FasterWhisperASR:
     def __init__(self, model_size: str = "small", device: str = "cpu"):
-        self._lock = threading.Lock()
         self.model = WhisperModel(
             os.getenv("ASR_MODEL", model_size),
             device=device,
@@ -39,16 +37,15 @@ class FasterWhisperASR:
             audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
         if len(audio) == 0 or np.abs(audio).max() < 1e-4:
             return ""
-        with self._lock:
-            segments, _ = self.model.transcribe(
-                audio,
-                language="ru",
-                beam_size=1,
-                temperature=0.0,
-                condition_on_previous_text=False,
-                initial_prompt="Поликлиника. Запись, перенос, отмена, фамилия, имя, дата рождения.",
-            )
-            return " ".join(segment.text.strip() for segment in segments)
+        segments, _ = self.model.transcribe(
+            audio,
+            language="ru",
+            beam_size=1,
+            temperature=0.0,
+            condition_on_previous_text=False,
+            initial_prompt="Поликлиника. Запись, перенос, отмена, фамилия, имя, дата рождения.",
+        )
+        return " ".join(segment.text.strip() for segment in segments)
 
     def transcribe(self, pcm_16k_bytes: bytes) -> str:
         if not pcm_16k_bytes:

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +19,20 @@ import (
 	"github.com/himera/tochka-voice/go-core/pkg/storage"
 )
 
+var (
+	reANI     = regexp.MustCompile(`(?i)(?:;\s*)?ANI:\s*[^;\n]+`)
+	reTrigger = regexp.MustCompile(`(?i)(?:;\s*)?триггер:\s*[^;\n]+`)
+	rePhone   = regexp.MustCompile(`(?:\+7|8|7)[\s\-\(]*[0-9]{3}[\s\-\)]*[0-9]{3}[\s\-]*[0-9]{2}[\s\-]*[0-9]{2}`)
+)
+
+// SanitizeDescription removes ANI, raw triggers, and phone numbers before storing or sending to external MIS.
+func SanitizeDescription(desc string) string {
+	d := reANI.ReplaceAllString(desc, "")
+	d = reTrigger.ReplaceAllString(d, "")
+	d = rePhone.ReplaceAllString(d, "")
+	return strings.TrimSpace(d)
+}
+
 type Service struct {
 	store *storage.Store
 	mis   misclient.MISClient
@@ -25,6 +41,7 @@ type Service struct {
 func New(s *storage.Store, m misclient.MISClient) *Service { return &Service{store: s, mis: m} }
 
 func (s *Service) Enqueue(ctx context.Context, clientID int, description string) error {
+	description = SanitizeDescription(description)
 	if len([]rune(description)) > 900 {
 		return errors.New("escalation description exceeds 900 characters")
 	}
@@ -52,6 +69,11 @@ func (s *Service) technicalClient(ctx context.Context) (int, error) {
 // Drain sends one job. A single worker owns this outbox; an interrupted SENDING
 // job is marked UNCERTAIN on restart rather than causing a duplicate POST.
 func (s *Service) Drain(ctx context.Context) error {
+	now := time.Now().Unix()
+	if _, err := s.store.DB.ExecContext(ctx, "UPDATE escalations SET status='PENDING', lease_until=0 WHERE status='SENDING' AND lease_until<=?", now); err != nil {
+		return err
+	}
+
 	tx, err := s.store.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -67,7 +89,8 @@ func (s *Service) Drain(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, "UPDATE escalations SET status='SENDING',attempts=attempts+1 WHERE id=? AND status='PENDING'", id)
+	leaseUntil := time.Now().Add(30 * time.Second).Unix()
+	res, err := tx.ExecContext(ctx, "UPDATE escalations SET status='SENDING',attempts=attempts+1,lease_until=? WHERE id=? AND status='PENDING'", leaseUntil, id)
 	if err != nil {
 		return err
 	}
@@ -81,11 +104,12 @@ func (s *Service) Drain(ctx context.Context) error {
 	if clientID == 0 {
 		clientID, err = s.technicalClient(ctx)
 		if err != nil {
-			_, _ = s.store.DB.ExecContext(context.WithoutCancel(ctx), "UPDATE escalations SET status='PENDING' WHERE id=? AND status='SENDING'", id)
+			_, _ = s.store.DB.ExecContext(context.WithoutCancel(ctx), "UPDATE escalations SET status='PENDING',lease_until=0 WHERE id=? AND status='SENDING'", id)
 			return err
 		}
 	}
-	e, sendErr := s.mis.CreateEscalation(ctx, models.EscalationCreate{ClientID: clientID, Description: description})
+	cleanDesc := SanitizeDescription(description)
+	e, sendErr := s.mis.CreateEscalation(ctx, models.EscalationCreate{ClientID: clientID, Description: cleanDesc})
 	status := "SENT"
 	misID := 0
 	if sendErr != nil {
@@ -99,7 +123,7 @@ func (s *Service) Drain(ctx context.Context) error {
 	} else {
 		misID = e.ID
 	}
-	_, err = s.store.DB.ExecContext(context.WithoutCancel(ctx), "UPDATE escalations SET status=?,mis_id=? WHERE id=? AND status='SENDING'", status, misID, id)
+	_, err = s.store.DB.ExecContext(context.WithoutCancel(ctx), "UPDATE escalations SET status=?,mis_id=?,lease_until=0 WHERE id=? AND status='SENDING'", status, misID, id)
 	return errors.Join(sendErr, err)
 }
 

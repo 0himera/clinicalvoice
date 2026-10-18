@@ -3,7 +3,6 @@
 import io
 import os
 import re
-import threading
 from math import gcd
 from pathlib import Path
 
@@ -21,7 +20,6 @@ class SileroTTSService:
     def __init__(self, device: str = "cpu", speaker: str = "kseniya"):
         self.device = torch.device(device)
         self.speaker = os.getenv("TTS_SPEAKER", speaker)
-        self._lock = threading.Lock()
         model_version = os.getenv("TTS_MODEL_VERSION", "v5_ru")
         repository = f"snakers4/silero-models:{SILERO_REVISION}"
         source = "github"
@@ -61,7 +59,7 @@ class SileroTTSService:
             else:
                 chunks.append(part)
         model_rate = 24000 if sample_rate == 16000 else sample_rate
-        with self._lock, torch.inference_mode():
+        with torch.inference_mode():
             audio = np.concatenate(
                 [
                     self.model.apply_tts(

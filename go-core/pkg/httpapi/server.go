@@ -69,6 +69,7 @@ type session struct {
 	channel     string
 	caller      string
 	control     sync.Mutex
+	turnCancel  context.CancelFunc
 	interrupted atomic.Pointer[interruptResult]
 	closed      atomic.Bool
 	patientID   atomic.Int64
@@ -122,9 +123,19 @@ func New(cfg Config) *Server {
 		w.Header().Set("Cache-Control", "no-store")
 		cleanPath := strings.TrimSuffix(r.URL.Path, "/")
 		isHealth := cleanPath == "/healthz" || cleanPath == "/readyz" || cleanPath == "/health"
-		if cfg.Token != "" && !isHealth {
+		if !isHealth {
+			authHeader := r.Header.Get("Authorization")
+			token := ""
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				token = strings.TrimPrefix(authHeader, "Bearer ")
+			}
+			if cfg.Token == "" || token == "" {
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				problem(w, 401, "unauthorized")
+				return
+			}
 			want := sha256.Sum256([]byte(cfg.Token))
-			got := sha256.Sum256([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
+			got := sha256.Sum256([]byte(token))
 			if subtle.ConstantTimeCompare(want[:], got[:]) != 1 {
 				w.Header().Set("WWW-Authenticate", "Bearer")
 				problem(w, 401, "unauthorized")
@@ -168,7 +179,7 @@ func decode(w http.ResponseWriter, r *http.Request, out any) bool {
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	c, cancel := context.WithTimeout(r.Context(), time.Second)
 	defer cancel()
-	if err := s.cfg.Store.DB.PingContext(c); err != nil {
+	if err := s.cfg.Store.ReadDB().PingContext(c); err != nil {
 		problem(w, 503, "storage unavailable")
 		return
 	}
@@ -260,6 +271,22 @@ func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 	requestContext := diagnostics.WithTranscript(diagnostics.WithCall(r.Context(), e.id), s.cfg.Trace)
 	ctx, cancel := context.WithTimeout(requestContext, 35*time.Second)
 	defer cancel()
+
+	e.control.Lock()
+	e.turnCancel = cancel
+	e.control.Unlock()
+	defer func() {
+		e.control.Lock()
+		e.turnCancel = nil
+		e.control.Unlock()
+	}()
+
+	if e.call.OutboundVisitID > 0 && s.cfg.Campaign != nil {
+		if err := s.cfg.Campaign.ExtendLease(ctx, e.call.OutboundVisitID, 4*time.Minute); err != nil {
+			slog.Warn("failed to extend reminder lease", "visit_id", e.call.OutboundVisitID, "error", err)
+		}
+	}
+
 	previousState := e.call.CurrentState
 	optionsBefore := len(e.call.Options)
 	e.turns++
@@ -404,31 +431,40 @@ func (s *Server) interrupt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e.control.Lock()
-	defer e.control.Unlock()
 	if old := e.interrupted.Load(); old != nil && old.priority >= gate.Priority() {
+		e.control.Unlock()
 		write(w, 200, Response{StepResult: old.result, CallID: e.id})
 		return
 	}
+	if e.turnCancel != nil {
+		e.turnCancel()
+	}
 	result := dialogue.StepResult{NextState: dialogue.StateTransfer, BotSpeech: gate.BotResponse, TransferTarget: gate.Extension(), Outcome: "TRANSFERRED"}
 	result.ReasonCode = gate.ActionCode
-	if s.cfg.Escalate != nil {
-		trigger := []rune(gate.MatchedText)
-		if len(trigger) > 200 {
-			trigger = trigger[:200]
+	e.interrupted.Store(&interruptResult{result: result, priority: gate.Priority()})
+	e.control.Unlock()
+
+	if s.cfg.Slots != nil {
+		if err := s.cfg.Slots.Release(r.Context(), e.id); err != nil {
+			slog.Error("release slot on interrupt", "error", err)
 		}
-		reason := gate.ActionCode + "; звонок: " + e.id + "; ANI: " + e.caller + "; триггер: " + string(trigger)
+	}
+	if s.cfg.Escalate != nil {
+		reason := gate.ActionCode + "; звонок: " + e.id
 		if err := s.cfg.Escalate(r.Context(), int(e.patientID.Load()), reason); err == nil {
 			result.EscalationQueued = true
+			e.interrupted.Store(&interruptResult{result: result, priority: gate.Priority()})
 		} else {
 			slog.Error("persist call interruption", "error", err)
 		}
 	}
-	e.interrupted.Store(&interruptResult{result: result, priority: gate.Priority()})
 	if s.cfg.Trace != nil {
 		s.cfg.Trace.Info("call_interrupted", "call_id", e.id, "text", req.Text, "reason_code", gate.ActionCode, "transfer_target", result.TransferTarget, "bot_speech", result.BotSpeech)
 	}
-	if err := s.cfg.Store.Event(r.Context(), "INTERRUPTED"); err != nil {
-		slog.Error("record interruption", "error", err)
+	if s.cfg.Store != nil {
+		if err := s.cfg.Store.Event(r.Context(), "INTERRUPTED"); err != nil {
+			slog.Error("record interruption", "error", err)
+		}
 	}
 	write(w, 200, Response{StepResult: result, CallID: e.id})
 }
@@ -534,7 +570,7 @@ func (s *Server) dial(w http.ResponseWriter, r *http.Request) {
 	write(w, 202, map[string]string{"status": "queued"})
 }
 func (s *Server) escalations(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.cfg.Store.DB.QueryContext(r.Context(), "SELECT status,COUNT(*) FROM escalations GROUP BY status")
+	rows, err := s.cfg.Store.ReadDB().QueryContext(r.Context(), "SELECT status,COUNT(*) FROM escalations GROUP BY status")
 	if err != nil {
 		problem(w, 503, "outbox unavailable")
 		return
@@ -586,13 +622,21 @@ func (s *Server) Expire(ctx context.Context, now time.Time) {
 }
 func (s *Server) RunJanitor(ctx context.Context) {
 	t := time.NewTicker(15 * time.Second)
+	purgeTicker := time.NewTicker(30 * time.Second)
 	defer t.Stop()
+	defer purgeTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case now := <-t.C:
 			s.Expire(ctx, now)
+		case <-purgeTicker.C:
+			if s.cfg.Slots != nil {
+				if err := s.cfg.Slots.PurgeExpired(ctx); err != nil {
+					slog.Warn("purge expired slot claims", "error", err)
+				}
+			}
 		}
 	}
 }

@@ -92,6 +92,9 @@ func Test429AndMutationsAreNotBlindlyRetried(t *testing.T) {
 	if _, err = c.GetVisit(ctx, 1); err == nil {
 		t.Fatal("cancelled request was sent")
 	}
+	if Ambiguous(err) {
+		t.Fatal("unsent request was marked as ambiguous")
+	}
 }
 func TestMockPersistenceAndTerminalStates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")

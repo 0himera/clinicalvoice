@@ -5,6 +5,7 @@ FastAGI; arbitrary TCP clients cannot create dialogue sessions or select patient
 """
 
 import asyncio
+import concurrent.futures
 import contextlib
 import logging
 import math
@@ -44,6 +45,10 @@ class Bridge:
         self.calls: dict[str, Call] = {}
         self.tasks: set[asyncio.Task] = set()
         self.servers: list[asyncio.Server] = []
+        self.vad_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(4, settings.max_calls),
+            thread_name_prefix="vad",
+        )
         self.pending = 0
         self.http = httpx.AsyncClient(
             base_url=settings.core_url,
@@ -76,6 +81,7 @@ class Bridge:
         for task in list(self.tasks):
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
+        self.vad_executor.shutdown(wait=False, cancel_futures=True)
         self.calls.clear()
         await self.http.aclose()
         self.trace.close()
@@ -111,7 +117,9 @@ class Bridge:
 
     async def agi(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         task = asyncio.current_task()
-        self.tasks.add(task)
+        if task:
+            self.tasks.add(task)
+            task.add_done_callback(self.tasks.discard)
         try:
             async with asyncio.timeout(45):
                 environment: dict[str, str] = {}
@@ -128,7 +136,10 @@ class Bridge:
                         environment[key] = value.strip()
 
                 async def command(name: str, value: str):
-                    writer.write(f'SET VARIABLE {name} "{value}"\n'.encode("ascii"))
+                    if "\r" in name or "\n" in name or "\r" in value or "\n" in value:
+                        raise ValueError("CRLF characters not permitted in AGI command")
+                    escaped_value = value.replace("\\", "\\\\").replace('"', '\\"')
+                    writer.write(f'SET VARIABLE {name} "{escaped_value}"\n'.encode("ascii"))
                     await writer.drain()
                     answer = await reader.readline()
                     if not answer.startswith(b"200 result="):
@@ -197,9 +208,12 @@ class Bridge:
 
     async def audio(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         task = asyncio.current_task()
-        self.tasks.add(task)
+        if task:
+            self.tasks.add(task)
+            task.add_done_callback(self.tasks.discard)
         call = None
         worker = None
+        vad_task = None
         playback = None
         recognitions: set[asyncio.Task] = set()
         end_reason = "peer_hangup"
@@ -216,6 +230,7 @@ class Bridge:
                 self.trace("audio_connected", call_id=call_id)
                 detector = EndpointDetector(self.services.vad.new_stream())
                 utterances: asyncio.Queue[asyncio.Task | None] = asyncio.Queue(maxsize=2)
+                vad_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=100)
                 speech_lock = asyncio.Lock()
                 last_activity = time.monotonic()
                 silence_sent = 0
@@ -357,7 +372,13 @@ class Bridge:
                     while True:
                         recognition = await utterances.get()
                         busy = True
-                        recognized_text = await recognition if recognition else ("", revision)
+                        try:
+                            recognized_text = await recognition if recognition else ("", revision)
+                        except asyncio.CancelledError:
+                            if asyncio.current_task().cancelling():
+                                raise
+                            busy = False
+                            continue
                         if recognized_text is None or call.interrupted:
                             return
                         text, version = recognized_text
@@ -395,7 +416,86 @@ class Bridge:
                             return
                         busy = False
 
+                async def vad_loop():
+                    nonlocal revision, last_activity, silence_sent
+                    loop = asyncio.get_running_loop()
+                    try:
+                        while True:
+                            chunk = await vad_queue.get()
+                            if chunk is None:
+                                break
+                            complete, interrupted = await loop.run_in_executor(
+                                self.vad_executor, detector.feed, chunk
+                            )
+                            if interrupted:
+                                revision += 1
+                                self.trace(
+                                    "speech_started",
+                                    call_id=call_id,
+                                    revision=revision,
+                                    barge_in=bool(playback and not playback.done()),
+                                )
+                                last_activity = time.monotonic()
+                                silence_sent = 0
+                                if playback and not playback.done():
+                                    playback.cancel()
+                                while not utterances.empty():
+                                    try:
+                                        queued = utterances.get_nowait()
+                                        if queued and not queued.done():
+                                            queued.cancel()
+                                    except (asyncio.QueueEmpty, ValueError):
+                                        break
+                                for rec_task in list(recognitions):
+                                    if not rec_task.done():
+                                        rec_task.cancel()
+                                recognitions.clear()
+                            for pcm in complete:
+                                if utterances.full():
+                                    try:
+                                        oldest = utterances.get_nowait()
+                                        if oldest and not oldest.done():
+                                            oldest.cancel()
+                                    except (asyncio.QueueEmpty, ValueError):
+                                        pass
+                                recognition = asyncio.create_task(recognize(pcm, revision))
+                                recognitions.add(recognition)
+                                recognition.add_done_callback(recognized)
+                                try:
+                                    utterances.put_nowait(recognition)
+                                except asyncio.QueueFull:
+                                    try:
+                                        oldest = utterances.get_nowait()
+                                        if oldest and not oldest.done():
+                                            oldest.cancel()
+                                    except Exception:
+                                        pass
+                                    utterances.put_nowait(recognition)
+                                last_activity = time.monotonic()
+                            if (
+                                not busy
+                                and (not playback or playback.done())
+                                and utterances.empty()
+                                and not detector.speech
+                            ):
+                                idle = time.monotonic() - last_activity
+                                if idle >= 5 * (silence_sent + 1) and silence_sent < 2:
+                                    silence_sent += 1
+                                    self.trace(
+                                        "silence_prompt",
+                                        call_id=call_id,
+                                        count=silence_sent,
+                                        idle_ms=round(idle * 1000),
+                                    )
+                                    try:
+                                        utterances.put_nowait(None)
+                                    except asyncio.QueueFull:
+                                        pass
+                    except asyncio.CancelledError:
+                        pass
+
                 worker = asyncio.create_task(process())
+                vad_task = asyncio.create_task(vad_loop())
                 while not writer.is_closing():
                     packet = await asyncio.wait_for(reader.readexactly(3), 15)
                     kind, size = struct.unpack("!BH", packet)
@@ -410,45 +510,13 @@ class Bridge:
                         if kind == 0x03:
                             continue
                         raise ValueError("8 kHz PCM16 frames are required")
-                    complete, interrupted = detector.feed(data)
-                    if interrupted:
-                        revision += 1
-                        self.trace(
-                            "speech_started",
-                            call_id=call_id,
-                            revision=revision,
-                            barge_in=bool(playback and not playback.done()),
-                        )
-                        last_activity = time.monotonic()
-                        silence_sent = 0
-                        if playback and not playback.done():
-                            playback.cancel()
-                    for pcm in complete:
-                        if utterances.full():
-                            raise ConnectionError("utterance queue is full")
-                        recognition = asyncio.create_task(recognize(pcm, revision))
-                        recognitions.add(recognition)
-                        recognition.add_done_callback(recognized)
-                        utterances.put_nowait(recognition)
-                        last_activity = time.monotonic()
+                    await vad_queue.put(data)
                     if worker.done():
                         await worker  # surface errors rather than silently losing the call
-                    if (
-                        not busy
-                        and (not playback or playback.done())
-                        and utterances.empty()
-                        and not detector.speech
-                    ):
-                        idle = time.monotonic() - last_activity
-                        if idle >= 5 * (silence_sent + 1) and silence_sent < 2:
-                            silence_sent += 1
-                            self.trace(
-                                "silence_prompt",
-                                call_id=call_id,
-                                count=silence_sent,
-                                idle_ms=round(idle * 1000),
-                            )
-                            utterances.put_nowait(None)
+                    if vad_task.done():
+                        await vad_task
+                await vad_queue.put(None)
+                await vad_task
         except (
             asyncio.IncompleteReadError,
             TimeoutError,
@@ -461,11 +529,11 @@ class Bridge:
             end_reason = type(exc).__name__
             logger.info("audio connection ended (%s)", type(exc).__name__)
         finally:
-            for child in (worker, playback, *recognitions):
+            for child in (worker, vad_task, playback, *recognitions):
                 if child:
                     child.cancel()
             await asyncio.gather(
-                *(child for child in (worker, playback, *recognitions) if child),
+                *(child for child in (worker, vad_task, playback, *recognitions) if child),
                 return_exceptions=True,
             )
             writer.close()
@@ -477,4 +545,5 @@ class Bridge:
                 call.created = time.monotonic()
                 with contextlib.suppress(httpx.HTTPError):
                     await self.post(f"/api/dialogue/{call.call_id}/end")
-            self.tasks.discard(task)
+            if task:
+                self.tasks.discard(task)

@@ -41,14 +41,22 @@ type APIError struct {
 
 func (e *APIError) Error() string { return fmt.Sprintf("MIS returned HTTP %d", e.StatusCode) }
 
+var ErrNotSent = errors.New("request not sent to MIS")
+
 // Ambiguous reports whether a failed mutation may already have reached the MIS.
 // Such mutations must be reconciled, never blindly retried.
 func Ambiguous(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrNotSent) {
+		return false
+	}
 	var api *APIError
 	if errors.As(err, &api) {
 		return api.StatusCode >= 500
 	}
-	return err != nil
+	return true
 }
 
 type RealMISClient struct {
@@ -68,10 +76,17 @@ func NewRealMISClient(baseURL, token string) *RealMISClient {
 	if baseURL == "" {
 		baseURL = "https://crm-med-mock.dbi-testing.ru/api/v1"
 	}
-	return &RealMISClient{baseURL: strings.TrimRight(baseURL, "/"), token: token,
+	var limiter *rate.Limiter
+	if token != "" {
+		limiter = rate.NewLimiter(rate.Every(6*time.Second), 1)
+	}
+	return &RealMISClient{
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		token:      token,
 		events:     slog.Default(),
 		httpClient: &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
-		limiter:    rate.NewLimiter(rate.Every(6*time.Second), 1)}
+		limiter:    limiter,
+	}
 }
 
 func (c *RealMISClient) doRequest(ctx context.Context, method, path string, body, out any) (resultErr error) {
@@ -104,20 +119,24 @@ func (c *RealMISClient) doRequest(ctx context.Context, method, path string, body
 		c.events.Info("mis_request", "call_id", diagnostics.CallID(ctx), "method", method, "resource", resource, "status", status,
 			"queue_ms", queued.Milliseconds(), "request_ms", (elapsed - queued).Milliseconds(), "latency_ms", elapsed.Milliseconds(), "error_kind", issue)
 	}()
-	c.mu.Lock()
-	wait := time.Until(c.blockedUntil)
-	c.mu.Unlock()
-	if wait > 0 {
-		t := time.NewTimer(wait)
-		defer t.Stop()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-t.C:
+	if c.token != "" {
+		c.mu.Lock()
+		wait := time.Until(c.blockedUntil)
+		c.mu.Unlock()
+		if wait > 0 {
+			t := time.NewTimer(wait)
+			defer t.Stop()
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("%w: %w", ErrNotSent, ctx.Err())
+			case <-t.C:
+			}
 		}
 	}
-	if err := c.limiter.Wait(ctx); err != nil {
-		return err
+	if c.limiter != nil {
+		if err := c.limiter.Wait(ctx); err != nil {
+			return fmt.Errorf("%w: %w", ErrNotSent, err)
+		}
 	}
 	requestStarted = time.Now()
 	phase = "encode"
@@ -125,13 +144,13 @@ func (c *RealMISClient) doRequest(ctx context.Context, method, path string, body
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return fmt.Errorf("%w: %w", ErrNotSent, err)
 		}
 		reader = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrNotSent, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")

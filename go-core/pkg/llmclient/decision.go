@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -89,6 +91,20 @@ func NewDecisionClient(endpoint, apiToken string, enabled bool) *DecisionClient 
 // IsEnabled reports whether the decision client is active.
 func (c *DecisionClient) IsEnabled() bool {
 	return c != nil && c.enabled && c.endpoint != ""
+}
+
+// IsLocal reports whether the decision client endpoint is on loopback.
+func (c *DecisionClient) IsLocal() bool {
+	if c == nil || !c.enabled || c.endpoint == "" {
+		return true
+	}
+	u, err := url.Parse(c.endpoint)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	ip := net.ParseIP(host)
+	return (u.Scheme == "http" || u.Scheme == "https") && (host == "localhost" || (ip != nil && ip.IsLoopback()))
 }
 
 // Decide performs a raw POST /v1/decide request.

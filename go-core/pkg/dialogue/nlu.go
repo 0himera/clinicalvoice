@@ -9,6 +9,7 @@ import (
 
 	"github.com/himera/tochka-voice/go-core/pkg/llmclient"
 	"github.com/himera/tochka-voice/go-core/pkg/models"
+	"github.com/himera/tochka-voice/go-core/pkg/safety"
 )
 
 type nluContextKey struct{}
@@ -23,7 +24,7 @@ type nluTurn struct {
 
 // understand makes at most one bounded NLU request per turn. It never executes
 func isDecisionConfident(nlu *llmclient.ExtractedNLU) bool {
-	return nlu != nil && (nlu.Intent != "UNKNOWN" || nlu.DoctorName != "" || nlu.Specialty != "" || nlu.FAQTopic != "")
+	return nlu != nil && (nlu.Intent != "UNKNOWN" || nlu.DoctorName != "" || nlu.Specialty != "" || nlu.FAQTopic != "" || nlu.IsEmergency || nlu.OperatorRequested)
 }
 
 func isLLMConfident(nlu *llmclient.ExtractedNLU) bool {
@@ -38,6 +39,15 @@ func (f *FSMController) understand(ctx context.Context, text, state string) *llm
 	}
 	hasDecision := f.decisionClient != nil && f.decisionClient.IsEnabled()
 	hasLLM := f.llmClient != nil && f.llmClient.IsEnabled()
+	// SEC-01 (152-FZ): In PII collection and confirmation states, strictly forbid remote LLM/models
+	if state == StateIdentity || state == StateGuardian || state == StateConfirmCancel {
+		if f.llmClient != nil && !f.llmClient.IsLocal() {
+			hasLLM = false
+		}
+		if f.decisionClient != nil && !f.decisionClient.IsLocal() {
+			hasDecision = false
+		}
+	}
 	if !hasDecision && !hasLLM {
 		return nil
 	}
@@ -131,7 +141,7 @@ func (f *FSMController) understand(ctx context.Context, text, state string) *llm
 
 	case l := <-chLLM:
 		llmRes = &l
-		// LLM finished first. Check if Decision Model is about to finish with a confident System-1 answer.
+		// LLM finished first. Check if Decision Model is already finished with a confident System-1 answer.
 		select {
 		case d := <-chDec:
 			decRes = &d
@@ -141,10 +151,8 @@ func (f *FSMController) understand(ctx context.Context, text, state string) *llm
 				turn.used = true
 				return d.nlu
 			}
-		case <-time.After(150 * time.Millisecond):
+		default:
 			decCancel()
-		case <-ctx.Done():
-			return nil
 		}
 
 	case <-ctx.Done():
@@ -195,12 +203,10 @@ func (f *FSMController) nluInformation(ctx context.Context, s *models.CallSessio
 		return StepResult{}, false
 	}
 	if nlu.IsEmergency {
-		gate := f.gate.Check("Не могу дышать")
-		return f.transfer(ctx, s, gate.Extension(), gate.ActionCode+": угроза жизни в смысловом разборе", gate.BotResponse), true
+		return f.transfer(ctx, s, safety.ExtensionEmergency, safety.ActionEmergency+": угроза жизни в смысловом разборе", safety.SpeechEmergency), true
 	}
 	if nlu.OperatorRequested || nlu.Intent == "OPERATOR" {
-		gate := f.gate.Check("оператор")
-		return f.transfer(ctx, s, gate.Extension(), gate.ActionCode+": просьба о сотруднике в смысловом разборе", gate.BotResponse), true
+		return f.transfer(ctx, s, safety.ExtensionOperator, safety.ActionOperatorReq+": просьба о сотруднике в смысловом разборе", safety.SpeechOperator), true
 	}
 	if nlu.Intent == "CLARIFY" {
 		return f.aside(s, purposeExplanation(s)), true

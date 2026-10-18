@@ -161,7 +161,7 @@ func TestRestartReleasesTentativeSlotWithoutCancellingBookedVisit(t *testing.T) 
 	if result.NextState != StateMenu || r.call.Patient != nil || r.call.SelectedSlot != nil || r.call.SlotHeldKey != "" || len(r.visits(t)) != 0 {
 		t.Fatalf("restart retained tentative context: %+v", result)
 	}
-	if _, err := r.slots.HoldSlot(slot.DoctorID, slot.StartTime, "another-call", time.Minute); err != nil {
+	if _, err := r.slots.HoldSlot(context.Background(), slot.DoctorID, slot.StartTime, "another-call", time.Minute); err != nil {
 		t.Fatalf("restart did not release slot: %v", err)
 	}
 }

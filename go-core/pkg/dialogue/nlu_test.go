@@ -123,3 +123,35 @@ func TestNLUCannotInventNamesNotPresentInSpeech(t *testing.T) {
 		t.Fatalf("hallucinated identity accepted: %+v", result)
 	}
 }
+
+func TestRemoteLLMForbiddenInPIIStates(t *testing.T) {
+	r := newRig(t)
+	// Point to remote endpoint so IsLocal() returns false
+	remoteClient := llmclient.NewUniversalLLMClient(llmclient.Config{
+		Provider: "gemini",
+		BaseURL:  "https://generativelanguage.googleapis.com/v1beta/openai",
+		APIKey:   "remote-key",
+		Model:    "gemini-1.5-flash",
+		Timeout:  time.Second,
+	})
+	if remoteClient.IsLocal() {
+		t.Fatal("expected remote client to not be local")
+	}
+	r.fsm.SetLLMClient(remoteClient)
+
+	// Move to StateIdentity
+	r.turn("Запишите к врачу")
+	if r.call.CurrentState != StateIdentity {
+		t.Fatalf("expected StateIdentity, got %s", r.call.CurrentState)
+	}
+
+	// In StateIdentity, utterance contains PII. Extraction must happen locally via regex/parser without calling remote LLM.
+	result := r.turn("Иванов Иван Иванович 12.03.1985")
+	if result.LLMUsed {
+		t.Fatal("remote LLM was used in StateIdentity")
+	}
+	if r.call.LastName != "Иванов" || r.call.FirstName != "Иван" || r.call.BirthDate != "12.03.1985" {
+		t.Fatalf("local extraction failed: last=%q first=%q birth=%q", r.call.LastName, r.call.FirstName, r.call.BirthDate)
+	}
+}
+

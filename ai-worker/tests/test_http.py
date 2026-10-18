@@ -55,3 +55,72 @@ async def test_chunked_body_is_bounded_before_decoding(services):
             "/tts", content=chunks(), headers={"Content-Type": "application/json"}
         )
         assert response.status_code == 413
+
+
+async def test_decide_error_does_not_leak_exception(services):
+    class FailingDecision:
+        async def decide_async(self, state, questions):
+            raise RuntimeError("Database connection string postgres://secret:pwd@host/db failed")
+
+    services.decision = FailingDecision()
+    app = create_app(Settings(telephony=False), services)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        response = await client.post(
+            "/v1/decide",
+            json={"state": {"intent": "booking"}, "questions": {"q1": "test"}},
+        )
+        assert response.status_code == 500
+        assert response.json() == {"detail": "Decision engine evaluation failed"}
+        assert "Database" not in response.text
+        assert "secret" not in response.text
+
+
+async def test_decide_disconnected_client_returns_499(services, monkeypatch):
+    class DummyDecision:
+        async def decide_async(self, state, questions):
+            return {"answers": {"q1": "a1"}}
+
+    services.decision = DummyDecision()
+    app = create_app(Settings(telephony=False), services)
+
+    from fastapi import Request
+
+    async def fake_disconnected(self):
+        return True
+
+    monkeypatch.setattr(Request, "is_disconnected", fake_disconnected)
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        response = await client.post(
+            "/v1/decide",
+            json={"state": {}, "questions": {}},
+        )
+        assert response.status_code == 499
+
+
+async def test_timing_attack_hash_comparison(services):
+    app = create_app(Settings(telephony=False, api_token="top_secret_token"), services)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        # Incorrect token
+        res_bad = await client.post(
+            "/tts",
+            json={"text": "Привет"},
+            headers={"Authorization": "Bearer wrong_token"},
+        )
+        assert res_bad.status_code == 401
+        # Correct token
+        res_ok = await client.post(
+            "/tts",
+            json={"text": "Привет"},
+            headers={"Authorization": "Bearer top_secret_token"},
+        )
+        assert res_ok.status_code == 200

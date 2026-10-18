@@ -2,6 +2,7 @@ package escalation
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/himera/tochka-voice/go-core/pkg/misclient"
@@ -58,5 +59,38 @@ func TestTechnicalPatientOutboxAndUnknownOutcome(t *testing.T) {
 				t.Fatalf("not delivered: %s %d", status, misID)
 			}
 		})
+	}
+}
+
+func TestEscalationSanitizationExcludesANIAndTrigger(t *testing.T) {
+	s, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	mock := misclient.NewMockMISClient()
+	service := New(s, mock)
+	ctx := context.Background()
+
+	inputDesc := "R-01; звонок: 12345; ANI: +79991234567; триггер: не могу дышать"
+	if err = service.Enqueue(ctx, 1, inputDesc); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var storedDesc string
+	if err = s.DB.QueryRow("SELECT description FROM escalations").Scan(&storedDesc); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(storedDesc, "ANI") || strings.Contains(storedDesc, "+79991234567") {
+		t.Fatalf("ANI phone was not stripped: %s", storedDesc)
+	}
+	if strings.Contains(storedDesc, "триггер") || strings.Contains(storedDesc, "не могу дышать") {
+		t.Fatalf("trigger quote was not stripped: %s", storedDesc)
+	}
+	if !strings.Contains(storedDesc, "R-01") || !strings.Contains(storedDesc, "звонок: 12345") {
+		t.Fatalf("action code or call id was lost: %s", storedDesc)
 	}
 }

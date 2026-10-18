@@ -199,3 +199,26 @@ func TestMalformedWorkbookFailsClosed(t *testing.T) {
 		t.Fatal("missing slot and doctor sheets accepted")
 	}
 }
+
+func TestExcelMinutesFormats(t *testing.T) {
+	cases := []struct {
+		input string
+		want  int
+	}{
+		{"09:00", 540},
+		{"9:00", 540},
+		{"15:04", 15*60 + 4},
+		{"3:04", 3*60 + 4},
+		{"15:04:05", 15*60 + 4},
+		{"3:04:05", 3*60 + 4},
+	}
+	for _, tc := range cases {
+		got, err := excelMinutes(tc.input)
+		if err != nil {
+			t.Fatalf("excelMinutes(%q) returned error: %v", tc.input, err)
+		}
+		if got != tc.want {
+			t.Fatalf("excelMinutes(%q) = %d, want %d", tc.input, got, tc.want)
+		}
+	}
+}

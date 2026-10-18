@@ -104,7 +104,7 @@ func TestReschedulePreservesVisitAndFreesOldSlot(t *testing.T) {
 	if len(visits) != 1 || visits[0].ID != old.ID || visits[0].ScheduledAt == old.ScheduledAt || out.Outcome != "RESCHEDULED" {
 		t.Fatalf("reschedule duplicated/lost visit: %+v %+v", visits, out)
 	}
-	if _, err := r.slots.HoldSlot(oldSlot.DoctorID, oldSlot.StartTime, "another", time.Minute); err != nil {
+	if _, err := r.slots.HoldSlot(context.Background(), oldSlot.DoctorID, oldSlot.StartTime, "another", time.Minute); err != nil {
 		t.Fatalf("old slot remained occupied: %v", err)
 	}
 }
@@ -120,7 +120,7 @@ func TestCancelFreesSlotAndRequiresAffirmation(t *testing.T) {
 	if res := r.turn("да"); res.Outcome != "CANCELLED" || len(r.visits(t)) != 0 {
 		t.Fatalf("cancel failed: %+v", res)
 	}
-	if _, err := r.slots.HoldSlot(slot.DoctorID, slot.StartTime, "new", time.Minute); err != nil {
+	if _, err := r.slots.HoldSlot(context.Background(), slot.DoctorID, slot.StartTime, "new", time.Minute); err != nil {
 		t.Fatalf("cancelled slot not released: %v", err)
 	}
 }

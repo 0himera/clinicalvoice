@@ -76,8 +76,15 @@ func TestTechnicalEventsExplainFailuresWithoutPatientTextOrSecrets(t *testing.T)
 	}
 }
 
+const defaultTestToken = "test-token"
+
 func testAPI(t *testing.T, token string) (*Server, *misclient.MockMISClient) {
 	t.Helper()
+	if token == "" {
+		token = defaultTestToken
+	} else if token == "EMPTY" {
+		token = ""
+	}
 	store, err := storage.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -181,8 +188,8 @@ func TestUrgentInterruptDoesNotWaitForMISMutation(t *testing.T) {
 		t.Fatalf("late response overrode interruption: %+v", result)
 	}
 	visits, err := mis.ListVisits(context.Background(), 1, models.VisitPlanned)
-	if err != nil || len(visits) != 1 {
-		t.Fatalf("in-flight mutation was lost: %+v %v", visits, err)
+	if err != nil || len(visits) != 0 {
+		t.Fatalf("in-flight mutation was not aborted on interrupt: %+v %v", visits, err)
 	}
 }
 func request(t *testing.T, api *Server, method, path string, payload any, token string) *httptest.ResponseRecorder {
@@ -193,8 +200,12 @@ func request(t *testing.T, api *Server, method, path string, payload any, token 
 	}
 	r := httptest.NewRequest(method, path, bytes.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
-	if token != "" {
+	if token == "NO_AUTH" {
+		// explicitly no token
+	} else if token != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
+	} else if api.cfg.Token != "" {
+		r.Header.Set("Authorization", "Bearer "+api.cfg.Token)
 	}
 	w := httptest.NewRecorder()
 	api.ServeHTTP(w, r)
@@ -234,7 +245,7 @@ func TestHTTPBookingIdempotencyAndValidation(t *testing.T) {
 }
 func TestAuthenticationAndSessionExpiry(t *testing.T) {
 	api, _ := testAPI(t, "secret")
-	if w := request(t, api, "POST", "/api/dialogue/start", map[string]any{}, ""); w.Code != 401 {
+	if w := request(t, api, "POST", "/api/dialogue/start", map[string]any{}, "NO_AUTH"); w.Code != 401 {
 		t.Fatal("unauthenticated start accepted")
 	}
 	w := request(t, api, "POST", "/api/dialogue/start", map[string]any{}, "secret")
@@ -261,6 +272,7 @@ func TestConcurrentTurnsDoNotRace(t *testing.T) {
 			payload, _ := json.Marshal(map[string]string{"call_id": res.CallID, "text": "режим работы"})
 			r := httptest.NewRequest(http.MethodPost, "/api/dialogue/turn", bytes.NewReader(payload))
 			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("Authorization", "Bearer "+api.cfg.Token)
 			rr := httptest.NewRecorder()
 			api.ServeHTTP(rr, r)
 			if rr.Code != 200 && rr.Code != 409 {
@@ -269,4 +281,48 @@ func TestConcurrentTurnsDoNotRace(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestAuthenticationRequiredAndHealthEndpointsExempt(t *testing.T) {
+	// Server with empty token must reject non-health endpoints with 401
+	apiEmpty, _ := testAPI(t, "EMPTY")
+	w := request(t, apiEmpty, "POST", "/api/dialogue/start", map[string]any{}, "some-token")
+	if w.Code != 401 {
+		t.Fatalf("empty server token must reject non-health endpoints: got %d", w.Code)
+	}
+
+	// Health endpoints must pass without token
+	for _, healthPath := range []string{"/healthz", "/readyz", "/health"} {
+		w = request(t, apiEmpty, "GET", healthPath, nil, "NO_AUTH")
+		if w.Code != 200 {
+			t.Fatalf("%s must be accessible without token: got %d", healthPath, w.Code)
+		}
+	}
+
+	// Server with configured token:
+	api, _ := testAPI(t, "valid-token")
+	for _, healthPath := range []string{"/healthz", "/readyz"} {
+		w = request(t, api, "GET", healthPath, nil, "NO_AUTH")
+		if w.Code != 200 {
+			t.Fatalf("%s must be accessible without token: got %d", healthPath, w.Code)
+		}
+	}
+
+	// Non-health endpoint fails without token
+	w = request(t, api, "POST", "/api/dialogue/start", map[string]any{}, "NO_AUTH")
+	if w.Code != 401 {
+		t.Fatalf("non-health endpoint without token must return 401: got %d", w.Code)
+	}
+
+	// Non-health endpoint fails with invalid token
+	w = request(t, api, "POST", "/api/dialogue/start", map[string]any{}, "invalid-token")
+	if w.Code != 401 {
+		t.Fatalf("non-health endpoint with invalid token must return 401: got %d", w.Code)
+	}
+
+	// Non-health endpoint succeeds with valid token
+	w = request(t, api, "POST", "/api/dialogue/start", map[string]any{}, "valid-token")
+	if w.Code != 201 {
+		t.Fatalf("non-health endpoint with valid token must succeed: got %d", w.Code)
+	}
 }

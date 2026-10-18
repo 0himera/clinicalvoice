@@ -18,8 +18,18 @@ import (
 )
 
 type Store struct {
-	DB   *sql.DB
-	lock *os.File
+	DB      *sql.DB
+	writeDB *sql.DB
+	readDB  *sql.DB
+	lock    *os.File
+}
+
+func (s *Store) WriteDB() *sql.DB {
+	return s.writeDB
+}
+
+func (s *Store) ReadDB() *sql.DB {
+	return s.readDB
 }
 
 func Open(path string) (result *Store, resultErr error) {
@@ -60,22 +70,35 @@ func Open(path string) (result *Store, resultErr error) {
 	} else {
 		dsn += "&"
 	}
-	dsn += "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
-	db, err := sql.Open("sqlite", dsn)
+	basePragmas := "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+	writeDSN := dsn + basePragmas + "&_txlock=immediate"
+	readDSN := dsn + basePragmas + "&_query_only=true"
+
+	writeDB, err := sql.Open("sqlite", writeDSN)
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
-	s := &Store{DB: db, lock: lock}
+	writeDB.SetMaxOpenConns(1)
+
+	s := &Store{DB: writeDB, writeDB: writeDB, lock: lock}
 	if err = s.migrate(); err != nil {
-		_ = db.Close()
+		_ = writeDB.Close()
 		return nil, err
 	}
+
+	readDB, err := sql.Open("sqlite", readDSN)
+	if err != nil {
+		_ = writeDB.Close()
+		return nil, err
+	}
+	readDB.SetMaxOpenConns(10)
+	s.readDB = readDB
+
 	return s, nil
 }
 
 func (s *Store) migrate() error {
-	_, err := s.DB.Exec(`
+	_, err := s.writeDB.Exec(`
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 INSERT INTO schema_version SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
 CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value BLOB NOT NULL);
@@ -97,26 +120,37 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE TABLE IF NOT EXISTS escalations (
  id TEXT PRIMARY KEY, client_id INTEGER NOT NULL, description TEXT NOT NULL,
  status TEXT NOT NULL DEFAULT 'PENDING', mis_id INTEGER NOT NULL DEFAULT 0,
- attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+ attempts INTEGER NOT NULL DEFAULT 0, lease_until INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
 `)
 	if err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
+	_, _ = s.writeDB.Exec("ALTER TABLE escalations ADD COLUMN lease_until INTEGER NOT NULL DEFAULT 0")
+
 	var version int
-	if err = s.DB.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+	if err = s.writeDB.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		return err
 	}
 	if version != 1 {
 		return fmt.Errorf("unsupported database schema %d", version)
 	}
-	if _, err = s.DB.Exec("UPDATE slot_claims SET status='uncertain' WHERE status='pending'"); err != nil {
+	if _, err = s.writeDB.Exec("UPDATE slot_claims SET status='uncertain' WHERE status='pending'"); err != nil {
+		return err
+	}
+	if _, err = s.writeDB.Exec("DELETE FROM slot_claims WHERE status='held' AND (expires_at <= ? OR expires_at = 0)", time.Now().Unix()); err != nil {
 		return err
 	}
 	return nil
 }
 
 func (s *Store) Close() error {
-	err := s.DB.Close()
+	var err error
+	if s.readDB != nil {
+		err = errors.Join(err, s.readDB.Close())
+	}
+	if s.writeDB != nil {
+		err = errors.Join(err, s.writeDB.Close())
+	}
 	if s.lock != nil {
 		err = errors.Join(err, unix.Flock(int(s.lock.Fd()), unix.LOCK_UN), s.lock.Close())
 		s.lock = nil
@@ -146,13 +180,13 @@ func (s *Store) Put(ctx context.Context, key string, value any) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.DB.ExecContext(ctx, "INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", key, b)
+	_, err = s.writeDB.ExecContext(ctx, "INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", key, b)
 	return err
 }
 
 func (s *Store) Get(ctx context.Context, key string, out any) error {
 	var data []byte
-	if err := s.DB.QueryRowContext(ctx, "SELECT value FROM metadata WHERE key=?", key).Scan(&data); err != nil {
+	if err := s.readDB.QueryRowContext(ctx, "SELECT value FROM metadata WHERE key=?", key).Scan(&data); err != nil {
 		return err
 	}
 	return json.Unmarshal(data, out)
@@ -168,7 +202,7 @@ func (s *Store) SaveContact(ctx context.Context, c Contact) error {
 	if c.ClientID <= 0 || c.Endpoint == "" {
 		return fmt.Errorf("client and endpoint are required")
 	}
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO contacts VALUES(?,?,?,?) ON CONFLICT(client_id)
+	_, err := s.writeDB.ExecContext(ctx, `INSERT INTO contacts VALUES(?,?,?,?) ON CONFLICT(client_id)
  DO UPDATE SET endpoint=excluded.endpoint, reminder_consent=excluded.reminder_consent, updated_at=excluded.updated_at`,
 		c.ClientID, c.Endpoint, c.ReminderConsent, time.Now().Unix())
 	return err
@@ -176,18 +210,22 @@ func (s *Store) SaveContact(ctx context.Context, c Contact) error {
 
 func (s *Store) Contact(ctx context.Context, id int) (Contact, error) {
 	c := Contact{ClientID: id}
-	err := s.DB.QueryRowContext(ctx, "SELECT endpoint,reminder_consent FROM contacts WHERE client_id=?", id).Scan(&c.Endpoint, &c.ReminderConsent)
+	err := s.readDB.QueryRowContext(ctx, "SELECT endpoint,reminder_consent FROM contacts WHERE client_id=?", id).Scan(&c.Endpoint, &c.ReminderConsent)
 	return c, err
+}
+
+func (s *Store) GetContact(ctx context.Context, id int) (Contact, error) {
+	return s.Contact(ctx, id)
 }
 
 // Event stores aggregate outcomes only, never utterances, names or caller numbers.
 func (s *Store) Event(ctx context.Context, kind string) error {
-	_, err := s.DB.ExecContext(ctx, "INSERT INTO events(kind,created_at) VALUES(?,?)", kind, time.Now().Unix())
+	_, err := s.writeDB.ExecContext(ctx, "INSERT INTO events(kind,created_at) VALUES(?,?)", kind, time.Now().Unix())
 	return err
 }
 
 func (s *Store) Stats(ctx context.Context) (map[string]int, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT kind,COUNT(*) FROM events GROUP BY kind")
+	rows, err := s.readDB.QueryContext(ctx, "SELECT kind,COUNT(*) FROM events GROUP BY kind")
 	if err != nil {
 		return nil, err
 	}

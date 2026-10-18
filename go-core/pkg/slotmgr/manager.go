@@ -61,7 +61,7 @@ func (sm *SlotManager) Available(ctx context.Context, q Query) ([]models.Slot, e
 	if q.Limit <= 0 || q.Limit > 3 {
 		q.Limit = 2
 	}
-	rows, err := sm.store.DB.QueryContext(ctx, "SELECT doctor_id,starts_at FROM slot_claims WHERE status!='held' OR expires_at>?", now.Unix())
+	rows, err := sm.store.ReadDB().QueryContext(ctx, "SELECT doctor_id,starts_at FROM slot_claims WHERE status!='held' OR expires_at>?", now.Unix())
 	if err != nil {
 		return nil, err
 	}
@@ -127,14 +127,14 @@ func slotKey(id int, t time.Time) string {
 	return fmt.Sprintf("%d:%s", id, t.UTC().Format(time.RFC3339))
 }
 
-func (sm *SlotManager) HoldSlot(id int, at time.Time, owner string, ttl time.Duration) (string, error) {
+func (sm *SlotManager) HoldSlot(ctx context.Context, id int, at time.Time, owner string, ttl time.Duration) (string, error) {
 	if owner == "" || ttl <= 0 {
 		return "", ErrUnavailable
 	}
 	if !sm.bookable[slotKey(id, at)] || at.Before(time.Now().Add(30*time.Minute)) {
 		return "", ErrUnavailable
 	}
-	res, err := sm.store.DB.Exec(`INSERT INTO slot_claims(doctor_id,starts_at,owner,status,expires_at) VALUES(?,?,?,'held',?)
+	res, err := sm.store.DB.ExecContext(ctx, `INSERT INTO slot_claims(doctor_id,starts_at,owner,status,expires_at) VALUES(?,?,?,'held',?)
  ON CONFLICT(doctor_id,starts_at) DO UPDATE SET owner=excluded.owner,status='held',expires_at=excluded.expires_at
  WHERE slot_claims.status='held' AND (slot_claims.expires_at<=? OR slot_claims.owner=excluded.owner)`, id, at.UTC().Format(time.RFC3339), owner, time.Now().Add(ttl).Unix(), time.Now().Unix())
 	if err != nil {
@@ -148,6 +148,11 @@ func (sm *SlotManager) HoldSlot(id int, at time.Time, owner string, ttl time.Dur
 		return "", ErrUnavailable
 	}
 	return slotKey(id, at), nil
+}
+
+func (sm *SlotManager) PurgeExpired(ctx context.Context) error {
+	_, err := sm.store.DB.ExecContext(ctx, "DELETE FROM slot_claims WHERE status='held' AND expires_at<=?", time.Now().Unix())
+	return err
 }
 
 func (sm *SlotManager) Release(ctx context.Context, owner string) error {

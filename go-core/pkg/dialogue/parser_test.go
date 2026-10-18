@@ -100,3 +100,31 @@ func TestConfirmationAlternativesAreUnknown(t *testing.T) {
 		}
 	}
 }
+
+func TestPoliteConfirmationsAndAffirm(t *testing.T) {
+	affirms := []string{
+		"Записывайте",
+		"Да, спасибо большое, записывайте",
+		"Отлично, записывайте",
+		"Да, отлично",
+		"Согласен, записывайте",
+	}
+
+	for _, text := range affirms {
+		if got := Confirmation(text); got != IntentAffirm {
+			t.Errorf("Confirmation(%q) = %v; want %v", text, got, IntentAffirm)
+		}
+	}
+}
+
+func TestExtractFIOPatientka(t *testing.T) {
+	last, first, middle := ExtractFIO("пациентка Иванова Анна Ивановна")
+	if last != "Иванова" || first != "Анна" || middle != "Ивановна" {
+		t.Errorf("ExtractFIO failed: got %s %s %s, want Иванова Анна Ивановна", last, first, middle)
+	}
+
+	last, first, _ = ExtractFIO("пациентка Смирнова Елена 15 мая 1990")
+	if last != "Смирнова" || first != "Елена" {
+		t.Errorf("ExtractFIO failed: got %s %s, want Смирнова Елена", last, first)
+	}
+}
