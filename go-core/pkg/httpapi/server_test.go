@@ -466,3 +466,37 @@ func TestLateOperatorPersistenceCannotOverwriteEmergency(t *testing.T) {
 		t.Fatalf("late result downgraded emergency: %+v", got)
 	}
 }
+
+func TestRecognitionQualityParticipatesInTurnIdempotency(t *testing.T) {
+	api, mis := testAPI(t, "")
+	started := request(t, api, "POST", "/api/dialogue/start", map[string]string{}, "")
+	var call Response
+	if err := json.Unmarshal(started.Body.Bytes(), &call); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Запишите к терапевту", "Иванов Иван Иванович 12.03.1985", "первый"} {
+		response := request(t, api, "POST", "/api/dialogue/turn", map[string]string{"call_id": call.CallID, "text": text}, "")
+		if response.Code != 200 {
+			t.Fatal(response.Body)
+		}
+	}
+	payload := map[string]any{"call_id": call.CallID, "text": "да", "turn_id": "confirm", "asr_uncertain": true}
+	response := request(t, api, "POST", "/api/dialogue/turn", payload, "")
+	if response.Code != 200 || !strings.Contains(response.Body.String(), "Не уверен") {
+		t.Fatal(response.Body)
+	}
+	visits, _ := mis.ListVisits(context.Background(), 1, models.VisitPlanned)
+	if len(visits) != 0 {
+		t.Fatal("uncertain consent booked a visit")
+	}
+	payload["asr_uncertain"] = false
+	if response = request(t, api, "POST", "/api/dialogue/turn", payload, ""); response.Code != 409 {
+		t.Fatal("same turn ID accepted different quality metadata")
+	}
+	payload["turn_id"] = "new-confirmation"
+	response = request(t, api, "POST", "/api/dialogue/turn", payload, "")
+	visits, _ = mis.ListVisits(context.Background(), 1, models.VisitPlanned)
+	if response.Code != 200 || len(visits) != 1 {
+		t.Fatalf("new clear confirmation failed: %s %+v", response.Body, visits)
+	}
+}

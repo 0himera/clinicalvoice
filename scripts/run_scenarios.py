@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -133,6 +134,7 @@ def run_scenario(
     caller = scenario.get("caller_number", "")
     last_visit_id = None
     rescheduled_ids = []
+    selected_clock = None
 
     try:
         before_visits = client.visits()
@@ -162,9 +164,16 @@ def run_scenario(
         if verbose:
             print(f"[{scenario_id}] START → {init_res.get('state')} | {init_res.get('bot_speech')}")
 
+        previous_response = init_res
         for step in scenario.get("steps", []):
             turn_no = step.get("turn", 0)
             user_text = step["user"]
+            if "{offered_time}" in user_text:
+                clocks = re.findall(r"\b\d{2}:\d{2}\b", previous_response.get("bot_speech", ""))
+                unique = [clock for clock in clocks if clocks.count(clock) == 1]
+                assert unique, "fixture needs an unambiguous time actually offered by the workbook"
+                selected_clock = unique[0]
+                user_text = user_text.format(offered_time=selected_clock)
 
             if voice:
                 audio = client.speak(user_text, "baya")
@@ -174,6 +183,7 @@ def run_scenario(
 
             before_turn = {v["id"]: v for v in client.visits()}
             res = client.turn(spoken_text)
+            previous_response = res
             after_turn = {v["id"]: v for v in client.visits()}
             added = after_turn.keys() - before_turn.keys()
             removed = before_turn.keys() - after_turn.keys()
@@ -186,6 +196,10 @@ def run_scenario(
                     "booking must create exactly one visit and preserve all others"
                 )
                 last_visit_id = next(iter(added))
+                if selected_clock is not None:
+                    assert after_turn[last_visit_id]["scheduled_at"].endswith(
+                        " " + selected_clock
+                    ), "booked time differs from the spoken choice"
                 assert after_turn[last_visit_id]["status"] == "Запланирована", (
                     "new visit must be planned"
                 )

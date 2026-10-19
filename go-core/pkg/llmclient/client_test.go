@@ -291,3 +291,17 @@ func TestRemoteClientRejectsPrivateFirstUtteranceBeforeHTTP(t *testing.T) {
 		t.Fatal("invalid remote payload")
 	}
 }
+
+func TestRemotePolicyRejectsEndpointDrift(t *testing.T) {
+	for _, base := range []string{"https://hub.gigaschool.ru/api/v1/llm/v1", "https://hub.gigaschool.ru/other", "https://hub.gigaschool.ru/api/v1/llm/v1?token=private", "https://user:password@hub.gigaschool.ru/api/v1/llm/v1"} {
+		cfg := Config{Provider: "hub", BaseURL: base, APIKey: "fixture", Model: "fixture", MaxTokens: 256, AllowRemote: true}
+		err := NewUniversalLLMClient(cfg).Validate()
+		if (err == nil) != (base == "https://hub.gigaschool.ru/api/v1/llm/v1") {
+			t.Fatalf("endpoint policy for %q: %v", base, err)
+		}
+		cfg.AllowRemote = false
+		if NewUniversalLLMClient(cfg).Validate() == nil {
+			t.Fatal("remote enabled without opt-in")
+		}
+	}
+}

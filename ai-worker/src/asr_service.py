@@ -9,6 +9,8 @@ import soundfile as sf
 from faster_whisper import WhisperModel
 from scipy.signal import resample_poly
 
+from src.recognition import Recognition
+
 
 class FasterWhisperASR:
     def __init__(self, model_size: str = "small", device: str = "cpu"):
@@ -29,15 +31,15 @@ class FasterWhisperASR:
         segments, _ = self.model.transcribe(np.zeros(16000, dtype=np.float32), language="ru")
         list(segments)
 
-    def _transcribe(self, audio: np.ndarray) -> str:
+    def _recognize(self, audio: np.ndarray) -> Recognition:
         if len(audio) == 0:
-            return ""
+            return Recognition("", needs_repeat=True)
         if len(audio) > 30 * 16000:
             audio = audio[: 30 * 16000]
         if not np.isfinite(audio).all():
             audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
         if len(audio) == 0 or np.abs(audio).max() < 1e-4:
-            return ""
+            return Recognition("", needs_repeat=True)
         segments, _ = self.model.transcribe(
             audio,
             language="ru",
@@ -46,17 +48,20 @@ class FasterWhisperASR:
             condition_on_previous_text=False,
             initial_prompt="Поликлиника. Запись, перенос, отмена, фамилия, имя, дата рождения.",
         )
-        return " ".join(segment.text.strip() for segment in segments)
+        return Recognition.from_segments(segments)
 
     def transcribe(self, pcm_16k_bytes: bytes) -> str:
         if not pcm_16k_bytes:
             return ""
         data = np.frombuffer(pcm_16k_bytes, dtype="<i2").astype(np.float32) / 32768
-        return self._transcribe(data)
+        return self._recognize(data).text
 
     def transcribe_wav(self, wav_bytes: bytes) -> str:
+        return self.recognize_wav(wav_bytes).text
+
+    def recognize_wav(self, wav_bytes: bytes) -> Recognition:
         if not wav_bytes:
-            return ""
+            return Recognition("", needs_repeat=True)
         sample_rate = 16000
         data = np.array([], dtype=np.float32)
         try:
@@ -68,11 +73,11 @@ class FasterWhisperASR:
                 data = np.frombuffer(wav_bytes, dtype="<i2").astype(np.float32) / 32768
                 sample_rate = 8000
             except Exception:
-                return ""
+                return Recognition("", needs_repeat=True)
 
         if len(data) == 0:
-            return ""
+            return Recognition("", needs_repeat=True)
         if sample_rate != 16000:
             factor = gcd(sample_rate, 16000)
             data = resample_poly(data, 16000 // factor, sample_rate // factor).astype(np.float32)
-        return self._transcribe(data)
+        return self._recognize(data)

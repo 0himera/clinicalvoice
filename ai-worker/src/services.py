@@ -1,8 +1,13 @@
 """The inference boundary is injectable so transport tests need no model downloads."""
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+from src.recognition import Recognition
+
+logger = logging.getLogger(__name__)
 
 
 class ASR(Protocol):
@@ -64,7 +69,9 @@ class Services:
                 release()
             self._work.discard(done)
             if not done.cancelled():
-                done.exception()  # retrieve errors even if the HTTP caller disconnected
+                error = done.exception()
+                if error is not None:
+                    logger.warning("inference task failed (%s)", type(error).__name__)
 
         task.add_done_callback(finished)
         # Cancelling a Python Future cannot stop native inference. Keep both its
@@ -73,6 +80,13 @@ class Services:
 
     async def transcribe(self, audio: bytes) -> str:
         return await self._run(self.asr_capacity, self.asr.transcribe_wav, audio)
+
+    async def recognize(self, audio: bytes) -> Recognition:
+        method = getattr(self.asr, "recognize_wav", None)
+        if method is not None:
+            return await self._run(self.asr_capacity, method, audio)
+        text = await self.transcribe(audio)
+        return Recognition(text, needs_repeat=not text)
 
     async def synthesize(
         self, text: str, sample_rate: int = 24000, speaker: str | None = None

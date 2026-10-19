@@ -32,17 +32,21 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
             load_services, settings.device, settings
         )
         bridge = None
-        if settings.telephony:
-            from src.telephony import Bridge
-
-            bridge = Bridge(settings, app.state.services)
-            await bridge.start()
+        started = False
         try:
+            if settings.telephony:
+                from src.telephony import Bridge
+
+                bridge = Bridge(settings, app.state.services)
+                await bridge.start()
+                started = True
             yield
         finally:
-            if bridge is not None:
-                await bridge.close()
-            await app.state.services.close()
+            try:
+                if bridge is not None and started:
+                    await bridge.close()
+            finally:
+                await app.state.services.close()
 
     app = FastAPI(title="Tochka Voice speech service", version="0.2.0", lifespan=lifespan)
     app.add_middleware(BodyLimit)
@@ -92,13 +96,21 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
         started = time.perf_counter()
         try:
             async with asyncio.timeout(40):
-                text = await app.state.services.transcribe(audio)
+                recognition = await app.state.services.recognize(audio)
         except (ValueError, RuntimeError) as exc:
             logger.warning("ASR rejected audio (%s)", type(exc).__name__)
             raise HTTPException(422, "audio could not be recognized") from None
         except TimeoutError:
             raise HTTPException(503, "recognition capacity is busy") from None
-        return {"text": text, "latency_ms": round((time.perf_counter() - started) * 1000)}
+        return {
+            "text": recognition.text,
+            "needs_repeat": recognition.needs_repeat,
+            "avg_logprob": recognition.avg_logprob,
+            "quality_source": "whisper_logprob"
+            if recognition.avg_logprob is not None
+            else "unavailable",
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+        }
 
     @app.post("/tts")
     async def synthesize_speech(req: SynthesisRequest):

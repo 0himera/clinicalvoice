@@ -4,13 +4,21 @@ import struct
 import uuid
 
 import httpx
+import pytest
 
 from src.audio import frame
+from src.recognition import Recognition
 from src.settings import Settings
 from src.telephony import Bridge, Call
 
 
-async def test_audio_socket_reaches_dialogue_and_returns_audio(services, tmp_path):
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_audio_socket_reaches_dialogue_and_returns_audio(services, tmp_path, uncertain):
+    class ASR:
+        def recognize_wav(self, audio):
+            return Recognition("Запишите к терапевту", uncertain, -1.3 if uncertain else -0.2)
+
+    services.asr = ASR()
     turns = []
 
     async def core(request):
@@ -57,6 +65,7 @@ async def test_audio_socket_reaches_dialogue_and_returns_audio(services, tmp_pat
         assert len(turns) == 1
         assert turns[0]["text"] == "Запишите к терапевту"
         assert turns[0]["call_id"] == call_id
+        assert turns[0]["asr_uncertain"] is uncertain
     finally:
         await bridge.close()
     events = [json.loads(line) for line in (tmp_path / "speech.jsonl").read_text().splitlines()]

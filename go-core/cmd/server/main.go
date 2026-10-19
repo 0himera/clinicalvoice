@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -36,6 +38,23 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	nluConfig := llmclient.LoadConfigFromEnv()
+	llm := llmclient.NewUniversalLLMClient(nluConfig)
+	if nluConfig.Provider != "none" {
+		if err := llm.Validate(); err != nil {
+			return fmt.Errorf("configure dialogue NLU: %w", err)
+		}
+	}
+	if *checkConfig {
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"status": "ok", "nlu_provider": nluConfig.Provider,
+			"nlu_enabled": nluConfig.Provider != "none", "remote_opt_in": nluConfig.AllowRemote,
+			"remote_nlu":          nluConfig.Provider != "none" && !llm.IsLocal(),
+			"remote_input_policy": "closed_vocabulary_current_utterance_and_state",
+			"audio_recording":     false, "transcript_logging": cfg.Transcripts,
+		})
+	}
+
 	eventsFile, err := diagnostics.Open(cfg.TechnicalLogDir, "core-events")
 	if err != nil {
 		return fmt.Errorf("open technical log: %w", err)
@@ -128,14 +147,11 @@ func run() error {
 		fsm.SetDecisionClient(decisionClient)
 		slog.Info("decision model enabled", "url", cfg.DecisionModelURL)
 	}
-	if os.Getenv("LLM_PROVIDER") != "" && os.Getenv("LLM_PROVIDER") != "none" {
-		llm := llmclient.NewUniversalLLMClient(llmclient.LoadConfigFromEnv())
-		if err := llm.Validate(); err != nil {
-			return fmt.Errorf("configure dialogue NLU: %w", err)
-		}
+	if nluConfig.Provider != "none" {
 		fsm.SetLLMClient(llm)
-		slog.Info("dialogue NLU enabled", "provider", os.Getenv("LLM_PROVIDER"), "model", os.Getenv("LLM_MODEL"), "remote", !llm.IsLocal())
+		slog.Info("dialogue NLU enabled", "provider", nluConfig.Provider, "model", nluConfig.Model, "remote", !llm.IsLocal())
 	}
+
 	var dialer campaign.Dialer
 	var redirector httpapi.Redirector
 	if cfg.AMISecret != "" {
@@ -175,7 +191,11 @@ func run() error {
 	}
 	return errors.Join(err, shutdownErr)
 }
+
+var checkConfig = flag.Bool("check-config", false, "validate configuration without contacting MIS or loading models")
+
 func main() {
+	flag.Parse()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	if err := run(); err != nil {
 		slog.Error("server stopped", "error", err)

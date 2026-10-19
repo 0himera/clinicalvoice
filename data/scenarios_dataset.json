@@ -151,7 +151,7 @@
     "steps": [
       {
         "turn": 1,
-        "user": "Запишите к терапевту",
+        "user": "Запишите к терапевту Рябинину",
         "expected_state": "STATE_AWAIT_IDENTITY"
       },
       {
@@ -161,7 +161,7 @@
       },
       {
         "turn": 3,
-        "user": "Давайте на восемь двадцать",
+        "user": "Давайте на {offered_time}",
         "expected_state": "STATE_CONFIRM_BOOKING"
       },
       {

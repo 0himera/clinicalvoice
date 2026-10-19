@@ -12,6 +12,9 @@ import (
 // never count as failed identity attempts and cannot authorize a MIS mutation.
 func (f *FSMController) conversation(ctx context.Context, s *models.CallSession, text string) (StepResult, bool) {
 	norm := normalized(text)
+	if result, handled := f.correctInput(ctx, s, norm); handled {
+		return result, true
+	}
 	if containsAny(norm, "начнем сначала", "начать заново", "начнем заново", "в главное меню", "вернуться в меню") {
 		if err := f.slotMgr.Release(ctx, s.CallID); err != nil {
 			return f.systemFailure(ctx, s), true

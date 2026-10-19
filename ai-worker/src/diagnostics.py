@@ -80,9 +80,10 @@ class CallDiagnostics:
             "peak_percent",
             "clipped_percent",
             "text_chars",
+            "avg_logprob",
             "status",
         }
-        flags = {"barge_in", "interrupted"}
+        flags = {"barge_in", "interrupted", "needs_repeat"}
         code_patterns = {
             "state": r"STATE_[A-Z_]{1,50}",
             "reason_code": r"[RC]-\d{2}",

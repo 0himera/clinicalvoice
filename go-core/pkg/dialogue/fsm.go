@@ -137,6 +137,14 @@ func (f *FSMController) systemFailure(ctx context.Context, s *models.CallSession
 	return f.transfer(ctx, s, "101", "R-06: ошибка обращения к МИС или локальному хранилищу", "Система временно недоступна. Соединяю с регистратором для проверки результата.")
 }
 
+type recognitionUncertainKey struct{}
+
+// ProcessRecognizedInput keeps ASR quality separate from NLU confidence.
+// The safety gate still receives the original utterance before any retry.
+func (f *FSMController) ProcessRecognizedInput(ctx context.Context, s *models.CallSession, input string, uncertain bool) StepResult {
+	return f.ProcessInput(context.WithValue(ctx, recognitionUncertainKey{}, uncertain), s, input)
+}
+
 // ProcessInput is the sole owner of state transitions. Callers serialize turns per call.
 func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession, input string) (result StepResult) {
 	understanding := &nluTurn{}
@@ -212,6 +220,16 @@ func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession,
 	}
 	if s.CurrentState == StateTransfer {
 		return StepResult{NextState: StateTransfer, TransferTarget: s.TransferTarget, BotSpeech: "Соединяю с сотрудником. Оставайтесь на линии."}
+	}
+
+	if uncertain, _ := ctx.Value(recognitionUncertainKey{}).(bool); uncertain && text != "" {
+		result := f.retry(ctx, s, "Не уверен, что расслышал. Повторите, пожалуйста.")
+		result.DiagnosticCode = "asr_uncertain"
+		if result.TransferTarget == "" {
+			result.Source = "asr_quality"
+			result.Explanation = "Локальный ASR запросил повтор реплики; действие не выполнено"
+		}
+		return result
 	}
 
 	if text == "" {

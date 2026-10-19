@@ -1,0 +1,24 @@
+{
+  "database": "vm-sip-check-187c302dfda1.db",
+  "checks": [
+    {
+      "script": "test_voice_simulation.py",
+      "passed": true
+    },
+    {
+      "script": "sip_smoke.py",
+      "passed": true
+    },
+    {
+      "script": "sip_outbound_smoke.py",
+      "passed": true
+    },
+    {
+      "script": "sip_handoff_smoke.py",
+      "passed": true
+    }
+  ],
+  "measured_booking_seconds_from_stdout": 73.07,
+  "scope": "isolated mock with real local speech and loopback SIP; stand restored after checks",
+  "audio_recording": false
+}

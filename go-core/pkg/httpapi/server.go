@@ -253,9 +253,10 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 func (s *Server) find(id string) *session { s.mu.Lock(); defer s.mu.Unlock(); return s.sessions[id] }
 func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		CallID string `json:"call_id"`
-		Text   string `json:"text"`
-		TurnID string `json:"turn_id"`
+		CallID       string `json:"call_id"`
+		Text         string `json:"text"`
+		TurnID       string `json:"turn_id"`
+		ASRUncertain bool   `json:"asr_uncertain,omitempty"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -274,7 +275,7 @@ func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer e.mu.Unlock()
-	hash := sha256.Sum256([]byte(req.Text))
+	hash := sha256.Sum256([]byte(req.Text + "\x00" + strconv.FormatBool(req.ASRUncertain)))
 	if c, ok := e.cache[req.TurnID]; req.TurnID != "" && ok {
 		if c.hash != hash {
 			problem(w, 409, "turn_id was already used for another utterance")
@@ -331,7 +332,7 @@ func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 	optionsBefore := len(e.call.Options)
 	e.turns++
 	started := time.Now()
-	result := s.cfg.FSM.ProcessInput(ctx, e.call, req.Text)
+	result := s.cfg.FSM.ProcessRecognizedInput(ctx, e.call, req.Text, req.ASRUncertain)
 	patientID := int64(0)
 	if e.call.Patient != nil {
 		patientID = int64(e.call.Patient.ID)

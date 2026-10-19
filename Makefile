@@ -1,13 +1,19 @@
-.PHONY: help setup install build run-core run-ai docker-up docker-down health services-install gateway-install sip-check-vm test test-unit test-python lint check scenarios scenarios-voice zer0days zer0days-voice sim sim-live sim-live-1h voice smoke logs transcripts retention-timer clean
+.PHONY: help setup install build run-core run-ai docker-up docker-down health config-check benchmark services-install gateway-install sip-check-vm test test-unit test-python lint check scenarios scenarios-voice zer0days zer0days-voice sim sim-live sim-live-1h voice smoke logs transcripts retention-timer clean
 
 help:
-	@echo "setup install build docker-up run-core run-ai health services-install gateway-install sip-check-vm test lint check scenarios scenarios-voice zer0days zer0days-voice sim sim-live voice smoke logs transcripts retention-timer"
+	@echo "setup install build docker-up run-core run-ai health config-check benchmark services-install gateway-install sip-check-vm test lint check scenarios scenarios-voice zer0days zer0days-voice sim sim-live voice smoke logs transcripts retention-timer"
 
 setup:
 	python3 scripts/setup.py
 
 health:
 	python3 scripts/check_health.py
+
+config-check: build
+	./go-core/bin/server --check-config
+
+benchmark: build
+	cd ai-worker && uv run --inexact --locked --extra models python ../scripts/benchmark_voice.py
 
 services-install:
 	sudo python3 scripts/install_services.py --user "$$(id -un)"

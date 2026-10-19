@@ -193,7 +193,7 @@ func (c *UniversalLLMClient) Validate() error {
 			}
 			return nil
 		}
-		if (c.config.Provider == "hub" || c.config.Provider == "custom" || c.config.Provider == "gigachat" || c.config.Provider == "openai") && u.Scheme == "https" && u.Host == "hub.gigaschool.ru" {
+		if (c.config.Provider == "hub" || c.config.Provider == "custom" || c.config.Provider == "gigachat" || c.config.Provider == "openai") && u.Scheme == "https" && u.Host == "hub.gigaschool.ru" && u.Path == "/api/v1/llm/v1" && u.RawQuery == "" && u.Fragment == "" && u.User == nil {
 			if c.config.APIKey == "" {
 				return errors.New("LLM_API_KEY is required")
 			}
@@ -206,7 +206,7 @@ func (c *UniversalLLMClient) Validate() error {
 // IsLocal identifies loopback adapters. Remote Gemini requires separate explicit opt-in.
 func (c *UniversalLLMClient) IsLocal() bool {
 	u, err := url.Parse(c.config.BaseURL)
-	if err != nil {
+	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return false
 	}
 	host := u.Hostname()

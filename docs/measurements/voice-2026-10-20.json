@@ -1,0 +1,166 @@
+{
+  "warmup_excluded": 1,
+  "percentile_method": "median and nearest rank; with five samples p95 is the maximum",
+  "runs": {
+    "local": {
+      "time_utc": "2026-10-19T22:46:21.677850+00:00",
+      "hardware": {
+        "platform": "Linux-6.18.46-1-lts-x86_64-with-glibc2.44",
+        "cpu_count": 12
+      },
+      "speech_health": {
+        "status": "ok",
+        "device": "cpu",
+        "asr_ready": true,
+        "tts_ready": true,
+        "decision_ready": true
+      },
+      "scope": "local TTS + ASR + HTTP, one warmup excluded, serial synthetic FAQ, isolated mock, no audio retention; no SIP/playback or human pauses",
+      "samples": [
+        {
+          "tts_ms": 772.93,
+          "asr_ms": 1218.83,
+          "core_ms": 2.62,
+          "serial_ms": 1994.38,
+          "input_audio_seconds": 2.375,
+          "needs_repeat": false,
+          "faq_correct": true
+        },
+        {
+          "tts_ms": 32.7,
+          "asr_ms": 1161.5,
+          "core_ms": 1.93,
+          "serial_ms": 1196.13,
+          "input_audio_seconds": 2.375,
+          "needs_repeat": false,
+          "faq_correct": true
+        },
+        {
+          "tts_ms": 30.46,
+          "asr_ms": 1178.31,
+          "core_ms": 3.16,
+          "serial_ms": 1211.93,
+          "input_audio_seconds": 2.375,
+          "needs_repeat": false,
+          "faq_correct": true
+        },
+        {
+          "tts_ms": 31.22,
+          "asr_ms": 1135.78,
+          "core_ms": 2.42,
+          "serial_ms": 1169.41,
+          "input_audio_seconds": 2.375,
+          "needs_repeat": false,
+          "faq_correct": true
+        },
+        {
+          "tts_ms": 47.78,
+          "asr_ms": 1160.23,
+          "core_ms": 2.16,
+          "serial_ms": 1210.17,
+          "input_audio_seconds": 2.375,
+          "needs_repeat": false,
+          "faq_correct": true
+        }
+      ],
+      "summary": {
+        "tts_ms": {
+          "p50_ms": 32.7,
+          "p95_ms": 772.93
+        },
+        "asr_ms": {
+          "p50_ms": 1161.5,
+          "p95_ms": 1218.83
+        },
+        "core_ms": {
+          "p50_ms": 2.42,
+          "p95_ms": 3.16
+        },
+        "serial_ms": {
+          "p50_ms": 1210.17,
+          "p95_ms": 1994.38
+        }
+      }
+    },
+    "vm": {
+      "time_utc": "2026-10-19T22:50:16.838874+00:00",
+      "hardware": {
+        "platform": "Linux-5.15.0-191-generic-x86_64-with-glibc2.35",
+        "cpu_count": 4
+      },
+      "speech_health": {
+        "status": "ok",
+        "device": "cpu",
+        "asr_ready": true,
+        "tts_ready": true,
+        "decision_ready": true
+      },
+      "scope": "local TTS + ASR + HTTP, one warmup excluded, serial synthetic FAQ, isolated mock, no audio retention; no SIP/playback or human pauses",
+      "samples": [
+        {
+          "tts_ms": 1167.65,
+          "asr_ms": 1051.22,
+          "core_ms": 3.22,
+          "serial_ms": 2222.09,
+          "input_audio_seconds": 2.375,
+          "needs_repeat": false,
+          "faq_correct": true
+        },
+        {
+          "tts_ms": 41.03,
+          "asr_ms": 1038.01,
+          "core_ms": 2.67,
+          "serial_ms": 1081.71,
+          "input_audio_seconds": 2.375,
+          "needs_repeat": false,
+          "faq_correct": true
+        },
+        {
+          "tts_ms": 40.57,
+          "asr_ms": 1053.46,
+          "core_ms": 2.73,
+          "serial_ms": 1096.76,
+          "input_audio_seconds": 2.375,
+          "needs_repeat": false,
+          "faq_correct": true
+        },
+        {
+          "tts_ms": 38.8,
+          "asr_ms": 1043.09,
+          "core_ms": 2.76,
+          "serial_ms": 1084.65,
+          "input_audio_seconds": 2.375,
+          "needs_repeat": false,
+          "faq_correct": true
+        },
+        {
+          "tts_ms": 42.26,
+          "asr_ms": 1038.62,
+          "core_ms": 2.87,
+          "serial_ms": 1083.75,
+          "input_audio_seconds": 2.375,
+          "needs_repeat": false,
+          "faq_correct": true
+        }
+      ],
+      "summary": {
+        "tts_ms": {
+          "p50_ms": 41.03,
+          "p95_ms": 1167.65
+        },
+        "asr_ms": {
+          "p50_ms": 1043.09,
+          "p95_ms": 1053.46
+        },
+        "core_ms": {
+          "p50_ms": 2.76,
+          "p95_ms": 3.22
+        },
+        "serial_ms": {
+          "p50_ms": 1084.65,
+          "p95_ms": 2222.09
+        }
+      }
+    }
+  }
+}

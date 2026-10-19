@@ -105,5 +105,5 @@ func (f *FSMController) menu(ctx context.Context, s *models.CallSession, text st
 	if ExtractBirthDate(text) != "" || (nlu != nil && nlu.BirthDate != "") {
 		return f.identity(ctx, s, text)
 	}
-	return say(StateIdentity, "Назовите, пожалуйста, фамилию, имя, отчество и дату рождения пациента.")
+	return say(StateIdentity, "Назовите, пожалуйста, фамилию, имя, отчество и дату рождения пациента. Для исправления скажите «исправить данные».")
 }

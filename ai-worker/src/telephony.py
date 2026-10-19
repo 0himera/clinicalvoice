@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from src.audio import EndpointDetector, frame, pcm_metrics, pcm_to_wav, wav_to_pcm
+from src.cleanup import cancel_tasks
 from src.diagnostics import CallDiagnostics
 from src.services import Services
 from src.settings import Settings
@@ -80,17 +81,21 @@ class Bridge:
         logger.info("telephone transports ready")
 
     async def close(self):
-        for server in self.servers:
-            server.close()
-        for server in self.servers:
-            await server.wait_closed()
-        for task in list(self.tasks):
-            task.cancel()
-        await asyncio.gather(*self.tasks, return_exceptions=True)
-        self.vad_executor.shutdown(wait=False, cancel_futures=True)
-        self.calls.clear()
-        await self.http.aclose()
-        self.trace.close()
+        try:
+            for server in self.servers:
+                server.close()
+            try:
+                for server in self.servers:
+                    await server.wait_closed()
+            finally:
+                await cancel_tasks(self.tasks)
+        finally:
+            self.vad_executor.shutdown(wait=False, cancel_futures=True)
+            self.calls.clear()
+            try:
+                await self.http.aclose()
+            finally:
+                self.trace.close()
 
     async def post(self, path: str, data: dict | None = None) -> dict:
         started = time.monotonic()
@@ -108,7 +113,10 @@ class Bridge:
                 status=response.status_code,
                 latency_ms=round((time.monotonic() - started) * 1000),
             )
-            return response.json()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("invalid core response shape")
+            return payload
         except httpx.HTTPError as exc:
             self.trace(
                 "core_request_error",
@@ -324,12 +332,15 @@ class Bridge:
 
                 async def recognize(pcm: bytes, version: int):
                     started_asr = time.monotonic()
-                    text = await self.services.transcribe(pcm_to_wav(pcm))
+                    recognition = await self.services.recognize(pcm_to_wav(pcm))
+                    text = recognition.text
                     audio_fields = {}
                     if self.settings.debug_dialogue or self.settings.technical_logs:
                         audio_fields = await asyncio.to_thread(pcm_metrics, pcm)
                     self.trace(
                         "asr_result",
+                        needs_repeat=recognition.needs_repeat,
+                        avg_logprob=recognition.avg_logprob,
                         call_id=call_id,
                         revision=version,
                         text=text,
@@ -346,7 +357,7 @@ class Bridge:
                             call.interrupted = True
                             await respond(safety, version, force=True)
                             return None
-                    return text, version
+                    return text, version, recognition.needs_repeat
 
                 def recognized(done):
                     recognitions.discard(done)
@@ -362,15 +373,34 @@ class Bridge:
                         recognition = await utterances.get()
                         busy = True
                         try:
-                            recognized_text = await recognition if recognition else ("", revision)
+                            recognized_text = (
+                                await recognition if recognition else ("", revision, False)
+                            )
                         except asyncio.CancelledError:
                             if asyncio.current_task().cancelling():
                                 raise
                             busy = False
                             continue
+                        except (
+                            httpx.HTTPError,
+                            TimeoutError,
+                            OSError,
+                            ValueError,
+                            RuntimeError,
+                        ) as exc:
+                            logger.warning("recognition failed (%s)", type(exc).__name__)
+                            call.result["transfer_target"] = "101"
+                            await respond(
+                                {
+                                    "bot_speech": "Не удалось распознать речь. Соединяю с регистратором.",
+                                    "transfer_target": "101",
+                                },
+                                revision,
+                            )
+                            return
                         if recognized_text is None or call.interrupted:
                             return
-                        text, version = recognized_text
+                        text, version, needs_repeat = recognized_text
                         if version != revision:
                             busy = False
                             continue
@@ -382,9 +412,10 @@ class Bridge:
                                     "call_id": call_id,
                                     "turn_id": str(uuid.uuid4()),
                                     "text": text,
+                                    "asr_uncertain": needs_repeat,
                                 },
                             )
-                        except (httpx.HTTPError, TimeoutError, OSError) as exc:
+                        except (httpx.HTTPError, TimeoutError, OSError, ValueError) as exc:
                             logger.error(
                                 "Core dialogue turn failed for %s (%s)", call_id, type(exc).__name__
                             )
@@ -523,13 +554,7 @@ class Bridge:
             end_reason = type(exc).__name__
             logger.info("audio connection ended (%s)", type(exc).__name__)
         finally:
-            for child in (worker, vad_task, playback, *recognitions):
-                if child:
-                    child.cancel()
-            await asyncio.gather(
-                *(child for child in (worker, vad_task, playback, *recognitions) if child),
-                return_exceptions=True,
-            )
+            await cancel_tasks((worker, vad_task, playback, *recognitions))
             writer.close()
             with contextlib.suppress(OSError, TimeoutError):
                 await asyncio.wait_for(writer.wait_closed(), 2)
