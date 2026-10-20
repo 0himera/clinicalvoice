@@ -188,10 +188,12 @@ func TestRecordingObjectionDoesNotBecomeBooking(t *testing.T) {
 			}
 		})
 	}
-	r := newRig(t)
-	res := r.turn("Не записывайте меня к врачу")
-	if strings.Contains(res.BotSpeech, "запись разговора отключена") {
-		t.Fatalf("booking refusal was mistaken for a recording objection: %+v", res)
+	for _, phrase := range []string{"Не записывайте меня к врачу", "Я против записи к врачу"} {
+		r := newRig(t)
+		res := r.turn(phrase)
+		if strings.Contains(res.BotSpeech, "запись разговора отключена") {
+			t.Fatalf("booking refusal was mistaken for a recording objection: %+v", res)
+		}
 	}
 }
 
