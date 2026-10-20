@@ -31,6 +31,7 @@ const (
 	StateReminderConsent  = "STATE_REMINDER_CONSENT"
 	StateReminderIdentity = "STATE_REMINDER_IDENTITY"
 	StateReminder         = "STATE_REMINDER"
+	StateLabStatus        = "STATE_LAB_STATUS"
 	StateFinal            = "STATE_FINAL"
 	StateTransfer         = "STATE_TRANSFER"
 	StateDone             = "STATE_DONE"
@@ -64,6 +65,7 @@ type FSMController struct {
 	escalate       EscalateFunc
 	saveContact    SaveContactFunc
 	patientLocks   patientLocks
+	holidays       map[string]bool
 }
 
 func NewFSMController(sm *slotmgr.SlotManager, mc misclient.MISClient) *FSMController {
@@ -76,6 +78,9 @@ func (f *FSMController) SetDecisionClient(c *llmclient.DecisionClient) {
 func (f *FSMController) Gate() *safety.FastGate             { return f.gate }
 func (f *FSMController) SetEscalator(fn EscalateFunc)       { f.escalate = fn }
 func (f *FSMController) SetContactSaver(fn SaveContactFunc) { f.saveContact = fn }
+func (f *FSMController) SetHolidays(holidays map[string]bool) {
+	f.holidays = holidays
+}
 func (f *FSMController) InitialGreeting() StepResult {
 	return StepResult{
 		NextState:   StateMenu,
@@ -240,7 +245,7 @@ func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession,
 		}
 		return StepResult{NextState: s.CurrentState, BotSpeech: "Вы меня слышите?", keepPrompt: true}
 	}
-	if containsAny(norm, "не записывайте разговор", "против записи разговора", "без записи разговора", "отключите запись") {
+	if recordingObjection(norm) {
 		return f.aside(s, "Хорошо, запись разговора отключена, аудио не сохраняется. Продолжим.")
 	}
 	if containsAny(norm, "вы робот", "ты робот", "вы человек") {
@@ -252,12 +257,12 @@ func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession,
 		}
 		return StepResult{NextState: StateDone, BotSpeech: "Всего доброго, будьте здоровы!", ShouldHangup: true, Outcome: "COMPLETED"}
 	}
-	if thirdPartyRecordRequest(text) && (recordRequest(ParseIntent(text)) || containsAny(norm, "когда записан", "во сколько записан")) {
+	if thirdPartyNamedVisit(text) || (thirdPartyRecordRequest(text) && (recordRequest(ParseIntent(text)) || containsAny(norm, "когда у ", "во сколько у ", "на когда у "))) {
 		s.ThirdParty = true
 		return f.transfer(ctx, s, "101", "R-07: сведения о другом пациенте, полномочия не проверены", "Сведения о чужих записях сообщает сотрудник после проверки полномочий. Соединяю с регистратором.")
 	}
-	if personalLabStatus(norm) {
-		return f.transfer(ctx, s, "101", "R-08: индивидуальная готовность анализов недоступна в МИС", "Личный статус анализов мне недоступен. Соединяю с регистратором для проверки готовности.")
+	if personalLabStatus(norm) || (s.CurrentState == StateLabStatus && labDetail(text)) {
+		return f.labStatus(ctx, s, text)
 	}
 	if result, handled := f.conversation(ctx, s, text); handled {
 		return result
@@ -407,9 +412,18 @@ func (f *FSMController) ProcessInput(ctx context.Context, s *models.CallSession,
 		return say(StateReminder, fmt.Sprintf("Напоминаем о записи: %s, %s. Сможете подойти?", v.Doctor.FullName, v.ScheduledAt))
 	case StateReminder:
 		return f.reminder(ctx, s, text)
+	case StateLabStatus:
+		return f.labStatus(ctx, s, text)
 	default:
 		return f.systemFailure(ctx, s)
 	}
+}
+
+func recordingObjection(s string) bool {
+	if containsAny(s, "против записи", "против того чтобы записывали", "не хочу записи", "без записи разговора", "без аудиозаписи", "отключите запись", "отключите аудиозапись", "не сохраняйте аудио", "не сохраняйте разговор", "не надо записывать разговор", "не нужно записывать разговор", "не записывайте разговор", "не записывайте наш разговор", "не записывайте звонок", "не записывайте аудио") {
+		return true
+	}
+	return containsAny(s, "не записывайте", "не записывать", "не надо записывать", "не нужно записывать") && containsAny(s, "разговор", "аудио", "звонок")
 }
 
 func answeringMachine(text string) bool {

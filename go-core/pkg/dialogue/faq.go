@@ -2,12 +2,6 @@ package dialogue
 
 import "strings"
 
-func personalLabStatus(s string) bool {
-	return containsAny(s, "анализ", "результат", "исследован") &&
-		(containsAny(s, "готовы ли", "готов ли", "готова ли", "мои анализ", "моих анализ", "мне анализ", "мои результат", "пришли ли", "пришли результат") ||
-			(hasWord(s, "мои", "мое", "мой", "моя", "моих") && containsAny(s, "готов", "результат")))
-}
-
 // FAQ returns approved facts, not generated medical advice. Analysis readiness is
 // a reference answer: the hackathon MIS has no laboratory-status API.
 func FAQ(text string) (string, bool) {

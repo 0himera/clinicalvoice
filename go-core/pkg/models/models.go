@@ -163,6 +163,8 @@ type CallSession struct {
 	DirectoryPage        int          `json:"-"`
 	DirectoryFilter      string       `json:"-"`
 	PendingPrompt        string       `json:"-"` // Local repeat/resume context; never sent to NLU.
+	LabTest              string       `json:"-"` // Canonical laboratory test key for a normative readiness estimate.
+	LabCollectedAt       string       `json:"-"` // Patient-reported collection date, DD.MM.YYYY.
 	MedicalBoundaryGiven bool         `json:"-"`
 	NLUAttempted         bool         `json:"-"`
 	NLUIntent            string       `json:"-"`

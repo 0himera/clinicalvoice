@@ -12,10 +12,32 @@ import (
 
 var visitSubjectRE = regexp.MustCompile(`(?:^|\s)записан(?:а|ы)?\s+(\p{L}+(?:-\p{L}+)*)`)
 var namedVisitQueryRE = regexp.MustCompile(`^\s*(\p{L}+(?:-\p{L}+)*)(?:\s+\p{L}+(?:-\p{L}+)*){0,2}\s+(?:когда|во\s+сколько)\s+записан(?:а|ы)?(?:\s|[?.!]|$)`)
+var namedVisitPossessiveRE = regexp.MustCompile(`(?i)(?:^|\s)(?:когда|во\s+сколько|на\s+когда)\s+(?:у\s+)?([\p{L}-]+(?:\s+[\p{L}-]+)?)\s+(?:запис|прием|приём)`)
+var visitOfPersonRE = regexp.MustCompile(`(?i)(?:^|\s)(?:запись|прием|приём)\s+([\p{L}-]+)`)
 var possessiveVisitRE = regexp.MustCompile(`(?:^|\s)(?:его|ее)\s+(?:запис|визит|прием)\p{L}*`)
 
 // An explicitly named third-person subject is not a self-identification.
 // This inspects sentence structure, never a list of surname suffixes.
+func thirdPartyNamedVisit(text string) bool {
+	s := normalized(text)
+	if match := namedVisitPossessiveRE.FindStringSubmatch(text); len(match) > 1 && !hasWord(normalized(match[1]), "я", "меня", "мне", "мы", "нас", "моя", "мою", "мой", "мое", "вас", "вам", "вы", "поликлиники", "поликлиника", "врача", "врач", "доктора", "доктор", "терапевта", "терапевт", "специалиста", "специалист") {
+		return true
+	}
+	if match := visitOfPersonRE.FindStringSubmatch(text); len(match) > 1 && !hasWord(normalized(match[1]), "моя", "мою", "мой", "мое", "моей", "моего", "моему", "моих", "моим", "моими", "на", "к", "ко", "в", "и", "или", "а", "но", "потом", "затем", "сначала", "врачу", "врач", "терапевту", "терапевт", "отменена", "перенесена", "подтверждена", "есть", "нет", "сохранилась", "активна", "аннулирована", "создана", "закрыта", "сегодня", "завтра", "вчера") {
+		return true
+	}
+	firstPerson := hasWord(s, "я", "меня", "мне", "моя", "мою", "мой", "мое", "мы", "нас", "нам")
+	for _, match := range visitSubjectRE.FindAllStringSubmatch(s, -1) {
+		if firstPerson && !familyRequest(s) {
+			continue
+		}
+		if !hasWord(match[1], "я", "мы", "к", "ко", "на", "в", "у", "ли", "уже") {
+			return true
+		}
+	}
+	return false
+}
+
 func thirdPartyRecordRequest(text string) bool {
 	s := normalized(text)
 	if familyRequest(s) || hasWord(s, "он", "она", "чужую", "чужой") || possessiveVisitRE.MatchString(s) {
@@ -24,12 +46,7 @@ func thirdPartyRecordRequest(text string) bool {
 	if match := namedVisitQueryRE.FindStringSubmatch(s); len(match) > 1 && !hasWord(match[1], "я", "мы", "а", "и") {
 		return true
 	}
-	for _, match := range visitSubjectRE.FindAllStringSubmatch(s, -1) {
-		if !hasWord(match[1], "я", "мы", "к", "ко", "на", "в", "у", "ли", "уже") {
-			return true
-		}
-	}
-	return false
+	return thirdPartyNamedVisit(text)
 }
 
 func recordRequest(intent Intent) bool {
@@ -72,6 +89,8 @@ func resetIdentity(s *models.CallSession) {
 	s.CurrentScenario = models.ScenarioNone
 	s.CurrentState = StateMenu
 	s.PendingPrompt = ""
+	s.LabTest = ""
+	s.LabCollectedAt = ""
 	s.MedicalBoundaryGiven = false
 }
 

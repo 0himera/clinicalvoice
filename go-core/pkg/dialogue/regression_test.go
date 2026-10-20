@@ -179,10 +179,19 @@ func TestOperatorAndMedicalBoundaries(t *testing.T) {
 	}
 }
 func TestRecordingObjectionDoesNotBecomeBooking(t *testing.T) {
+	for _, phrase := range []string{"Я против записи разговора", "Я против записи", "Не записывайте разговор", "Отключите аудиозапись", "Не надо записывать наш разговор", "Не сохраняйте аудио"} {
+		t.Run(phrase, func(t *testing.T) {
+			r := newRig(t)
+			res := r.turn(phrase)
+			if res.NextState != StateMenu || !strings.Contains(res.BotSpeech, "не сохраняется") {
+				t.Fatalf("recording objection misrouted: %+v", res)
+			}
+		})
+	}
 	r := newRig(t)
-	res := r.turn("Я против записи разговора")
-	if res.NextState != StateMenu || !strings.Contains(res.BotSpeech, "не сохраняется") {
-		t.Fatalf("recording objection misrouted: %+v", res)
+	res := r.turn("Не записывайте меня к врачу")
+	if strings.Contains(res.BotSpeech, "запись разговора отключена") {
+		t.Fatalf("booking refusal was mistaken for a recording objection: %+v", res)
 	}
 }
 

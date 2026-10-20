@@ -120,7 +120,7 @@ func isTaskIntent(intent Intent) bool {
 
 func canSwitchTask(state string) bool {
 	switch state {
-	case StateIdentity, StateSpecialty, StateSchedule, StateChooseSlot, StateChooseVisit, StateReferral, StateOfferBooking:
+	case StateIdentity, StateSpecialty, StateSchedule, StateChooseSlot, StateChooseVisit, StateReferral, StateOfferBooking, StateLabStatus:
 		return true
 	}
 	return false
@@ -143,6 +143,8 @@ func pendingPrompt(s *models.CallSession) string {
 		return "Назовите полный адрес и причину вызова."
 	case StateReminderIdentity:
 		return "Вы тот человек, которому звонит поликлиника? Скажите да или нет."
+	case StateLabStatus:
+		return "Какой анализ и когда вы сдавали?"
 	default:
 		return "Чем могу помочь?"
 	}

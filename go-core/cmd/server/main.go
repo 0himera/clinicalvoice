@@ -134,6 +134,7 @@ func run() error {
 	}
 	outbox := escalation.New(store, mis)
 	fsm := dialogue.NewFSMController(slots, mis)
+	fsm.SetHolidays(snapshot.Holidays)
 	fsm.SetEscalator(outbox.Enqueue)
 	fsm.SetContactSaver(func(ctx context.Context, id int, number string, consent bool) error {
 		endpoint := "PJSIP/" + number

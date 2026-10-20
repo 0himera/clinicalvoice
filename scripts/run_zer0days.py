@@ -624,16 +624,27 @@ def run_case(number: int, h: Harness, previous: dict):
         result = h.turn("Готовы ли мои анализы?")
         text = result.get("bot_speech", "").lower()
         h.expect(
-            result.get("transfer_target") == "101" and "недоступен" in text,
-            "unavailable personal readiness must be disclosed with registrar handoff",
+            result.get("state") == "STATE_LAB_STATUS" and "какой анализ" in text,
+            "lab status did not ask for the test and collection date",
+        )
+        result = h.turn("Общий анализ крови сдавал вчера")
+        text = result.get("bot_speech", "").lower()
+        h.expect(
+            result.get("state") == "STATE_FINAL" and "норматив" in text,
+            "normative lab readiness was not returned",
         )
         h.expect(
-            "ваши анализы готовы" not in text and "ваши анализы не готовы" not in text,
-            "personal readiness fabricated without laboratory API",
+            "значения результатов я не вижу" in text
+            and all(value not in text for value in ("ммоль", "г/л", "хорош", "плох")),
+            "lab values were fabricated or interpreted",
         )
-        h.status = "PARTIAL"
+        h.expect(
+            result.get("transfer_target") != "101",
+            "normative readiness unnecessarily transferred to a human",
+        )
+        h.status = "PASS"
         h.notes.append(
-            "Organizer MIS has no laboratory-status API. No readiness is fabricated; CSV's full expectation is unsupported."
+            "Organizer MIS has no laboratory-status API. Readiness is a normative working-day estimate from the patient-reported test and date; values are never returned."
         )
     elif number == 17:
         visit = h.book()
