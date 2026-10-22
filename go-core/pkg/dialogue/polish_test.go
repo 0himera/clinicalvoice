@@ -109,3 +109,17 @@ func TestCorrectionHelpDoesNotDiscardConfirmedFieldsOrHold(t *testing.T) {
 		t.Fatalf("help changed the pending operation: %+v", result)
 	}
 }
+
+func TestIdentitySkipsPoliteDiscourseMarkers(t *testing.T) {
+	for _, prefix := range []string{"Хорошо. ", "Да, ", "Конечно, ", "Ладно, ", "Понятно. "} {
+		t.Run(prefix, func(t *testing.T) {
+			r := newRig(t)
+			r.turn("Запишите к терапевту")
+			r.turn("А зачем вам мои персональные данные?")
+			result := r.turn(prefix + "Иванов Иван Иванович 12 марта 1985")
+			if result.NextState != StateChooseSlot || !r.call.Identified || r.call.Patient == nil {
+				t.Fatalf("discourse marker changed identity parsing: %+v", result)
+			}
+		})
+	}
+}

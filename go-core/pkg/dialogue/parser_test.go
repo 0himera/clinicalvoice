@@ -22,6 +22,7 @@ func TestConfirmationAffirmations(t *testing.T) {
 		"Так точно",
 		"У аппарата",
 		"Это я",
+		"Да, напомните, пожалуйста",
 	}
 
 	for _, text := range affirms {
