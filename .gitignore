@@ -21,8 +21,7 @@ build/
 .pytest_cache/
 
 # Audio outputs & temporary recordings (keep .gitkeep)
-audio_output/*.wav
-audio_output/*.pcm
+audio_output/**
 !audio_output/.gitkeep
 /tmp/
 
