@@ -24,17 +24,30 @@ def gateway_configuration(template: str) -> tuple[str, str]:
 def dialplan(number: str) -> str:
     if not re.fullmatch(r"\d{3}", number):
         raise ValueError("invalid team number")
+    callback = """exten => h,1,GotoIf($["${CALLBACK}" = ""]?done)
+ same => n,GotoIf($["${CALLBACK_DONE}" = "1"]?done)
+ same => n,Set(CALLBACK_DONE=1)
+ same => n,NoOp(Callback to ${CALLBACK})
+ same => n,Originate(PJSIP/${CALLBACK}@gateway,exten,reminder-answered,s,1,45,a)
+ same => n(done),NoOp()
+"""
     return (
         (ROOT / "asterisk/extensions.conf").read_text()
         + f"""
 
-; The gateway identifies this team's softphone, not a public patient number.
+; Preserve the gateway caller (phone-{number} or expert-N) for the callback.
 [from-gateway]
-exten => {number},1,Set(CALLERID(num)=phone-{number}@gateway)
+exten => {number},1,Set(CALLBACK=${{CUT(CALLERID(num),@,1)}})
+ same => n,ExecIf($["${{CALLBACK}}" != ""]?Set(CALLERID(num)=${{CALLBACK}}@gateway))
  same => n,Goto(voice-inbound,s,1)
-
+"""
+        + callback
+        + """
 [reminder-answered]
-exten => s,1,Goto(voice-outbound,s,1)
+exten => s,1,Set(CALLBACK_DONE=1)
+ same => n,Set(CALLBACK=)
+ same => n,Answer()
+ same => n,Goto(voice-inbound,s,1)
 """
     )
 

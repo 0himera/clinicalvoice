@@ -21,8 +21,11 @@ def test_gateway_routes_use_project_audio_and_outbound_contexts():
     assert configuration.count("[gateway]") == 2
     plan = module.dialplan(number)
     assert "Goto(voice-inbound,s,1)" in plan
-    assert "Goto(voice-outbound,s,1)" in plan
+    assert "[voice-outbound]" in plan
+    assert "AGI(agi://127.0.0.1:4573/start,outbound,${VISIT_ID})" in plan
     assert "AudioSocket(${VOICE_ID},127.0.0.1:9092)" in plan
-    assert "${VISIT_ID}" in plan
-    assert "phone-078@gateway" in plan
+    assert "Set(CALLBACK=${CUT(CALLERID(num),@,1)})" in plan
+    assert "Originate(PJSIP/${CALLBACK}@gateway,exten,reminder-answered,s,1,45,a)" in plan
+    assert "[reminder-answered]" in plan
+    assert plan.count("exten => h,1") >= 2
     assert "$\\{" not in plan
