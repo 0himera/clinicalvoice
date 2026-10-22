@@ -83,14 +83,14 @@ class VoiceClient:
             self.ai.post("/asr", files={"file": ("input.wav", audio, "audio/wav")})
         ).json()["text"]
 
-    def speak(self, text: str, speaker: str = "kseniya") -> bytes:
+    def speak(self, text: str, speaker: str = "kseniya", sample_rate: int = 8000) -> bytes:
         return self.checked(
             self.ai.post(
                 "/tts",
                 json={
                     "text": text,
                     "speaker": speaker,
-                    "sample_rate": 8000,
+                    "sample_rate": sample_rate,
                 },
             )
         ).content

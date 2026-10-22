@@ -772,11 +772,64 @@ CREATE TABLE IF NOT EXISTS escalations (
 # ==============================================================================
 
 
+SILENCE_300MS = b"\x00\x00" * 2400
+
+
+def _prepare_record_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.chmod(0o700)
+
+
+def _write_transcript(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o600)
+
+
+def _wav_to_pcm8k(audio: bytes) -> bytes:
+    try:
+        with wave.open(io.BytesIO(audio), "rb") as source:
+            channels = source.getnchannels()
+            width = source.getsampwidth()
+            rate = source.getframerate()
+            data = source.readframes(source.getnframes())
+    except Exception:
+        return b""
+    if width != 2 or not data:
+        return b""
+    samples = np.frombuffer(data, dtype="<i2").astype(np.float32)
+    if channels > 1:
+        samples = samples.reshape(-1, channels).mean(axis=1)
+    if rate != 8000:
+        factor = int(np.gcd(rate, 8000))
+        samples = scipy.signal.resample_poly(samples, 8000 // factor, rate // factor)
+    return np.clip(samples, -32768, 32767).astype("<i2").tobytes()
+
+
+def _write_audio(path: Path, pcm: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(8000)
+        output.writeframes(pcm)
+    path.chmod(0o600)
+
+
+def _bot_audio(client: VoiceClient, text: str) -> bytes:
+    if not text:
+        return b""
+    try:
+        return _wav_to_pcm8k(client.speak(text, "kseniya", sample_rate=8000))
+    except Exception:
+        return b""
+
+
 async def run_single_simulation(
     scenario: dict[str, Any],
     backend: UserSimBackend,
     client: VoiceClient,
     verbose: bool = True,
+    record_dir: Path | None = None,
 ) -> SimSessionResult:
     scenario_id = scenario.get("id", "UNKNOWN")
     scenario_name = scenario.get("name", "")
@@ -796,6 +849,15 @@ async def run_single_simulation(
     init_res = client.start(caller_number=caller)
     bot_speech = init_res.get("bot_speech", "")
     bot_state = init_res.get("state", "STATE_MAIN_MENU")
+
+    recording: list[bytes] = []
+    transcript: list[str] = []
+    if record_dir is not None:
+        greeting_pcm = _bot_audio(client, bot_speech)
+        if greeting_pcm:
+            _write_audio(record_dir / "00-bot.wav", greeting_pcm)
+            recording.append(greeting_pcm + SILENCE_300MS)
+        transcript.append(f"[Bot] {bot_speech}")
 
     if verbose:
         print(f"\n{'=' * 70}")
@@ -821,6 +883,14 @@ async def run_single_simulation(
         if verbose:
             hangup_tag = " [HANGUP]" if hangup else ""
             print(f"[User] T{turn_no}: '{user_utterance}'{hangup_tag}")
+
+        if record_dir is not None:
+            patient_pcm = _wav_to_pcm8k(audio_bytes) if audio_bytes else b""
+            if patient_pcm:
+                _write_audio(record_dir / f"{turn_no:02d}-patient.wav", patient_pcm)
+                recording.append(patient_pcm + SILENCE_300MS)
+            if user_utterance:
+                transcript.append(f"[Patient] T{turn_no}: {user_utterance}")
 
         if hangup and not user_utterance:
             break
@@ -857,6 +927,13 @@ async def run_single_simulation(
         )
         metrics.append(metric)
 
+        if record_dir is not None:
+            bot_pcm = _bot_audio(client, bot_speech)
+            if bot_pcm:
+                _write_audio(record_dir / f"{turn_no:02d}-bot.wav", bot_pcm)
+                recording.append(bot_pcm + SILENCE_300MS)
+            transcript.append(f"[Bot] T{turn_no}: {bot_speech}")
+
         if verbose:
             outcome_tag = f" [{final_outcome}]" if final_outcome else ""
             print(
@@ -872,6 +949,13 @@ async def run_single_simulation(
             or not user_utterance
         ):
             break
+
+    if record_dir is not None:
+        if recording:
+            _write_audio(record_dir / "conversation.wav", b"".join(recording))
+        await asyncio.to_thread(
+            _write_transcript, record_dir / "transcript.txt", "\n".join(transcript) + "\n"
+        )
 
     total_duration = time.monotonic() - started_at
     latencies = [m.bot_latency_ms for m in metrics]
@@ -1188,6 +1272,11 @@ async def run_batch(args: argparse.Namespace, filtered: list[dict[str, Any]]) ->
         print(f"Mode: {args.rounds} round(s)")
     print(f"Goals: {len(filtered)} selected | Backend: {args.backend.upper()}")
     print(f"Live Reports: {args.report_json} & {args.report_md}")
+    record_root = None
+    if args.record_audio_dir:
+        record_root = args.record_audio_dir / datetime.now().strftime("%Y%m%dT%H%M%S")
+        await asyncio.to_thread(_prepare_record_dir, record_root)
+        print(f"Audio recordings: {record_root}")
     print("=" * 75 + "\n")
 
     while True:
@@ -1209,6 +1298,11 @@ async def run_batch(args: argparse.Namespace, filtered: list[dict[str, Any]]) ->
 
             fixture = goal_spec.get("mis_fixture", {})
             persona = goal_spec.get("persona", {})
+            record_dir = (
+                record_root / goal_spec.get("id", "scenario") if record_root is not None else None
+            )
+            if record_dir is not None:
+                await asyncio.to_thread(_prepare_record_dir, record_dir)
 
             try:
                 with start_isolated_server(
@@ -1247,6 +1341,7 @@ async def run_batch(args: argparse.Namespace, filtered: list[dict[str, Any]]) ->
                             backend=sim_backend,
                             client=vclient,
                             verbose=args.verbose,
+                            record_dir=record_dir,
                         )
                         results.append(res)
                         save_reports(
@@ -1391,6 +1486,12 @@ def main() -> None:
         type=Path,
         default=ROOT / "var" / "user_sim_report.md",
         help="Path to write live Markdown report",
+    )
+    parser.add_argument(
+        "--record-audio-dir",
+        type=Path,
+        default=None,
+        help="Write per-scenario conversation.wav, turn WAVs and transcript.txt",
     )
     parser.add_argument(
         "--port",

@@ -314,6 +314,20 @@ mock-базой и затем возвращает рабочую конфигу
 `make voice` открывает микрофон. `make sim` / `make sim-live` запускают отдельный
 симулятор вымышленных пациентов; голосовому режиму нужны дополнительные сервисы.
 
+Для записи разговоров Gemini Live задайте `GEMINI_API_KEY` и добавьте
+`--record-audio-dir audio_output/gemini-calls`:
+
+```bash
+cd ai-worker
+GEMINI_API_KEY=... .venv/bin/python ../scripts/user_sim.py \
+  --backend gemini-live --record-audio-dir ../audio_output/gemini-calls
+```
+
+Для каждого сценария сохраняются `conversation.wav`, отдельные реплики пациента
+и бота и `transcript.txt` с правами 0600; каталоги закрыты 0700. Это
+реконструкция разговора: голос пациента генерирует Gemini Live, ответы бота
+синтезируются локальным TTS. Аудиофайлы не коммитятся.
+
 ---
 
 ## 📁 Структура проекта
