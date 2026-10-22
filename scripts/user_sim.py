@@ -263,16 +263,16 @@ class GeminiLiveBackend(UserSimBackend):
         setup_msg = {
             "setup": {
                 "model": "models/gemini-3.8-live",
-                "generation_config": {
-                    "response_modalities": ["AUDIO"],
-                    "speech_config": {
-                        "voice_config": {"prebuilt_voice_config": {"voice_name": self.voice_name}}
+                "generationConfig": {
+                    "responseModalities": ["AUDIO"],
+                    "speechConfig": {
+                        "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": self.voice_name}}
                     },
                 },
-                "system_instruction": {"parts": [{"text": system_prompt}]},
+                "systemInstruction": {"parts": [{"text": system_prompt}]},
                 "tools": [
                     {
-                        "function_declarations": [
+                        "functionDeclarations": [
                             {
                                 "name": "hangup",
                                 "description": "Положить телефонную трубку и завершить разговор, когда цель достигнута или звонок окончен.",
@@ -307,7 +307,7 @@ class GeminiLiveBackend(UserSimBackend):
         turn_no: int,
     ) -> tuple[str, bool, bytes | None]:
         client_turn = {
-            "client_content": {
+            "clientContent": {
                 "turns": [
                     {
                         "role": "user",
@@ -318,7 +318,7 @@ class GeminiLiveBackend(UserSimBackend):
                         ],
                     }
                 ],
-                "turn_complete": True,
+                "turnComplete": True,
             }
         }
         await self.ws.send(json.dumps(client_turn))
@@ -338,8 +338,8 @@ class GeminiLiveBackend(UserSimBackend):
                     self.hangup_invoked = True
                     # Acknowledge tool call
                     tool_resp = {
-                        "tool_response": {
-                            "function_responses": [
+                        "toolResponse": {
+                            "functionResponses": [
                                 {
                                     "response": {"output": {"status": "hung_up"}},
                                     "id": call.get("id", "call_1"),
@@ -588,6 +588,7 @@ class MISFixtureSeeder:
         db_path: Path,
         fixture: dict[str, Any],
         persona: dict[str, Any],
+        patient: dict[str, Any] | None = None,
     ) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_path))
@@ -692,6 +693,17 @@ CREATE TABLE IF NOT EXISTS escalations (
                         "created_at": "16.10.2026 00:00",
                     }
                     var_id += 1
+
+            if patient and patient.get("full_name"):
+                parts = patient.get("full_name", "").split()
+                mock_data["Clients"]["20"] = {
+                    "id": 20,
+                    "last_name": parts[0] if len(parts) > 0 else "Пациент",
+                    "first_name": parts[1] if len(parts) > 1 else "Иван",
+                    "middle_name": parts[2] if len(parts) > 2 else "",
+                    "birth_date": normalize_birth_date(patient.get("birth_date", "")),
+                    "created_at": "16.10.2026 00:00",
+                }
 
             # Seed existing visits (for reschedule / cancellation scenarios)
             for v in fixture.get("existing_visits", []):
@@ -936,6 +948,7 @@ def start_isolated_server(
     port: int = 18080,
     fixture: dict[str, Any] | None = None,
     persona: dict[str, Any] | None = None,
+    patient: dict[str, Any] | None = None,
 ) -> Any:
     """Manages lifecycle of an isolated Go core instance with ephemeral SQLite DB."""
     import signal
@@ -944,7 +957,7 @@ def start_isolated_server(
     ensure_port_clean(port)
 
     db_path = ROOT / "var" / f"user-sim-{uuid.uuid4().hex[:8]}.db"
-    MISFixtureSeeder.preseed_database(db_path, fixture or {}, persona or {})
+    MISFixtureSeeder.preseed_database(db_path, fixture or {}, persona or {}, patient)
 
     env = os.environ.copy()
     core_token = os.getenv("CORE_API_TOKEN") or secrets.token_hex(24)
@@ -1198,7 +1211,12 @@ async def run_batch(args: argparse.Namespace, filtered: list[dict[str, Any]]) ->
             persona = goal_spec.get("persona", {})
 
             try:
-                with start_isolated_server(args.port, fixture=fixture, persona=persona):
+                with start_isolated_server(
+                    args.port,
+                    fixture=fixture,
+                    persona=persona,
+                    patient=goal_spec.get("patient"),
+                ):
                     vclient = VoiceClient()
 
                     # Setup backend

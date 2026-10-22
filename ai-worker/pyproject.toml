@@ -13,6 +13,7 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "pydantic>=2.7.0",
     "thx01>=1.0.0",
+    "websockets>=13.0",
 ]
 
 [project.optional-dependencies]
