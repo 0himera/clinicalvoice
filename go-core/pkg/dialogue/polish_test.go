@@ -123,3 +123,11 @@ func TestIdentitySkipsPoliteDiscourseMarkers(t *testing.T) {
 		})
 	}
 }
+
+func TestInitialIdentityPromptOmitsTechnicalCorrectionHint(t *testing.T) {
+	r := newRig(t)
+	result := r.turn("Запишите к терапевту")
+	if result.NextState != StateIdentity || strings.Contains(result.BotSpeech, "исправить данные") {
+		t.Fatalf("initial identity prompt exposes internal correction command: %+v", result)
+	}
+}
